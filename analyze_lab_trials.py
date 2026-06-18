@@ -1838,7 +1838,7 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
             continue
         for channel in [channel]:
             reference = median_window(df, channel, meta["deposition_s"] - 5.0, meta["deposition_s"])
-            threshold = reference - 0.10 * abs(reference)
+            threshold = reference - 0.15 * abs(reference)
             cps = detect_change_points(seg, channel)
             selected = None
             count_until = 0
@@ -1856,7 +1856,7 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
                         **cp,
                         "reference_window_s": f"{meta['deposition_s'] - 5.0:.1f}-{meta['deposition_s']:.1f}",
                         "reference_us_level": reference,
-                        "threshold_10pct_lower": threshold,
+                        "threshold_15pct_lower": threshold,
                         "us_level_at_change_point": level,
                         "threshold_met": met,
                         "note": "first passing change point used as detachment offset" if met and selected is None else ("later passing change point" if met else ""),
@@ -1881,7 +1881,7 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
                 count_until = 0
             pattern = (
                 f"{len(cps)} positive upward change points from detachment onset {onset:.1f}s to cooling-window end {window_end:.1f}s. "
-                f"{'First passing point at ' + f'{offset:.1f}s' if pd.notna(offset) else 'No change point reached the pre-deposition -10% threshold'}."
+                f"{'First passing point at ' + f'{offset:.1f}s' if pd.notna(offset) else 'No change point reached the pre-deposition -15% threshold'}."
             )
             summary_rows.append(
                 {
@@ -1897,12 +1897,12 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
                     "detachment_offset_s": offset,
                     "detachment_offset_status": status,
                     "reference_us_level": reference,
-                    "threshold_10pct_lower": threshold,
+                    "threshold_15pct_lower": threshold,
                     "us_level_at_decision": selected_level,
                     "change_points_detected_total": len(cps),
                     "change_points_until_detachment_or_last": count_until,
                     "pattern_description": pattern,
-                    "method": "positive/upward local mean-shift change points; full detachment per channel if US at change point >= 10%-below-pre-deposition-reference threshold",
+                    "method": "positive/upward local mean-shift change points; full detachment per channel if US at change point >= 15%-below-pre-deposition-reference threshold",
                 }
             )
     return pd.DataFrame(summary_rows), pd.DataFrame(cp_rows)
@@ -1921,7 +1921,7 @@ def detachment_change_point_summary(detachment_offset: pd.DataFrame) -> pd.DataF
         "detachment_offset_status",
         "detachment_offset_s",
         "reference_us_level",
-        "threshold_10pct_lower",
+        "threshold_15pct_lower",
         "us_level_at_decision",
         "change_points_detected_total",
         "change_points_until_detachment_or_last",
@@ -2094,7 +2094,7 @@ def make_lab_rupture_figures(detachment: pd.DataFrame, change_points: pd.DataFra
         plot_series(draw, seg[TIME_COL], seg[ch], box, colors.get(ch, "#3344cc"), width=3, ymin=ymin, ymax=ymax)
         for level, label, line_color in [
             (row["reference_us_level"], "pre-deposition reference", "#666666"),
-            (row["threshold_10pct_lower"], "10% lower threshold", colors.get(ch, "#3344cc")),
+            (row["threshold_15pct_lower"], "15% lower threshold", colors.get(ch, "#3344cc")),
         ]:
             if pd.notna(level) and ymax != ymin:
                 ypix = box[3] - (level - ymin) / (ymax - ymin) * (box[3] - box[1])
@@ -2124,7 +2124,7 @@ def make_lab_rupture_figures(detachment: pd.DataFrame, change_points: pd.DataFra
             line = f"Full offset: {row['detachment_offset_s']:.1f}s | US {row['us_level_at_decision']:.4f} | CPs until offset: {row['change_points_until_detachment_or_last']}"
         else:
             line = f"No full offset. Last diagnostic US {row['us_level_at_decision']:.4f} | total CPs: {row['change_points_detected_total']}"
-        draw.text((85, 520), f"Reference {row['reference_us_level']:.4f}; threshold {row['threshold_10pct_lower']:.4f}; pass if US >= threshold", fill="#000000", font=font)
+        draw.text((85, 520), f"Reference {row['reference_us_level']:.4f}; threshold {row['threshold_15pct_lower']:.4f}; pass if US >= threshold", fill="#000000", font=font)
         draw.text((85, 550), line, fill=colors.get(ch, "#3344cc"), font=font)
         draw.text((85, 590), f"Decision: {row['detachment_offset_status']}", fill="#000000", font=font)
         draw.text((760, 590), "Grey = CP; green = passes; red = full offset only", fill="#333333", font=small)
@@ -2159,7 +2159,7 @@ def concise_readme() -> pd.DataFrame:
                 "part": "4",
                 "sheet": "US Rupture Decisions",
                 "what_it_answers": "For each repetition, sensor code, and primary US channel, was full detachment reached and at what offset time?",
-                "how_to_read": "A time is reported only if a positive change point reaches the pre-deposition minus 10% threshold. Otherwise the status is partial.",
+                "how_to_read": "A time is reported only if a positive change point reaches the pre-deposition minus 15% threshold. Otherwise the status is partial.",
             },
             {
                 "part": "5",

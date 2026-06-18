@@ -27,6 +27,7 @@ AMBIENT_TEMPS = ["T6"]
 PRIMARY_US = ["Rx1Tx1", "Rx2Tx2"]
 ALL_US = ["Rx1Tx1", "Rx2Tx2", "Rx1Tx2", "Rx2Tx1"]
 TIME_COL = "Absolut[s]"
+SENSOR_CODE_TO_PRIMARY_US = {"11": "Rx1Tx1", "22": "Rx2Tx2"}
 
 CSV_RAW_SOURCES = {
     "at2455_a_test": CSV_INPUT_DIR / "a_test.csv",
@@ -1832,7 +1833,10 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
         seg = df[(df[TIME_COL] >= onset) & (df[TIME_COL] <= window_end)].copy()
         if seg.empty:
             continue
-        for channel in PRIMARY_US:
+        channel = SENSOR_CODE_TO_PRIMARY_US.get(str(lm["sensor_code"]))
+        if channel is None:
+            continue
+        for channel in [channel]:
             reference = median_window(df, channel, meta["deposition_s"] - 5.0, meta["deposition_s"])
             threshold = reference - 0.10 * abs(reference)
             cps = detect_change_points(seg, channel)
@@ -1902,6 +1906,38 @@ def lab_detachment_analysis(tables: dict[str, pd.DataFrame]) -> tuple[pd.DataFra
                 }
             )
     return pd.DataFrame(summary_rows), pd.DataFrame(cp_rows)
+
+
+def detachment_change_point_summary(detachment_offset: pd.DataFrame) -> pd.DataFrame:
+    if detachment_offset.empty:
+        return pd.DataFrame()
+    cols = [
+        "dataset",
+        "rep_id",
+        "sensor_code",
+        "channel",
+        "detachment_onset_absolute_s",
+        "analysis_window_end_s",
+        "detachment_offset_status",
+        "detachment_offset_s",
+        "reference_us_level",
+        "threshold_10pct_lower",
+        "us_level_at_decision",
+        "change_points_detected_total",
+        "change_points_until_detachment_or_last",
+        "pattern_description",
+    ]
+    out = detachment_offset[[c for c in cols if c in detachment_offset.columns]].copy()
+    out["sensor_channel_assignment"] = out["sensor_code"].astype(str).map(SENSOR_CODE_TO_PRIMARY_US)
+    out["change_point_count_interpretation"] = out.apply(
+        lambda r: (
+            f"{int(r['change_points_until_detachment_or_last'])} change points before full detachment offset"
+            if r["detachment_offset_status"] == "full_detachment_for_channel"
+            else f"{int(r['change_points_until_detachment_or_last'])} change points checked; no full detachment offset"
+        ),
+        axis=1,
+    )
+    return out
 
 
 def get_fonts() -> tuple[ImageFont.ImageFont, ImageFont.ImageFont]:
@@ -2162,7 +2198,7 @@ def build_revised_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
         "2 Repeatability CV": repeatability,
         "3 Temp Explains Outcomes": targeted_temp_outcome_links(tables, repeatability),
         "US Rupture Decisions": detachment_offset,
-        "US Change Points": detachment_change_points,
+        "US Change Points": detachment_change_point_summary(detachment_offset),
     }
 
 
@@ -2221,9 +2257,9 @@ def build_report() -> Path:
             png.unlink()
     zones_for_figures = detect_lab_zones(tables)
     rupture_decisions = report_tables["US Rupture Decisions"]
-    change_points = report_tables["US Change Points"]
+    _, detailed_change_points_for_figures = lab_detachment_analysis(tables)
     zone_figures = make_lab_zone_us_figures(zones_for_figures, rupture_decisions)
-    rupture_figures = make_lab_rupture_figures(rupture_decisions, change_points)
+    rupture_figures = make_lab_rupture_figures(rupture_decisions, detailed_change_points_for_figures)
 
     wb = Workbook()
     wb.remove(wb.active)

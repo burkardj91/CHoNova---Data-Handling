@@ -2105,6 +2105,189 @@ def detachment_behavior_statistics(tables: dict[str, pd.DataFrame], comparison: 
     return out.sort_values(["assessment", "metric", "eta2_effect_size"], ascending=[True, True, False])
 
 
+def repeatability_flag_from_cv(cv: float) -> str:
+    if pd.isna(cv):
+        return "not enough repetitions"
+    if cv < 5:
+        return "high repeatability"
+    if cv < 15:
+        return "moderate repeatability"
+    if cv < 20:
+        return "inspect"
+    return "low repeatability / inspect"
+
+
+def detachment_repeatability_cv(comparison: pd.DataFrame) -> pd.DataFrame:
+    if comparison.empty:
+        return pd.DataFrame()
+    metric_specs = [
+        ("summary_detachment_duration_s", "summary duration", "summary"),
+        ("us_detachment_duration_s", "preferred US duration", "preferred_us"),
+        ("us_change_points_until_offset_or_last", "preferred US change-point count", "preferred_us"),
+        ("rx1_detachment_duration_s", "Rx1Tx1 duration", "Rx1Tx1"),
+        ("rx1_change_points_until_offset_or_last", "Rx1Tx1 change-point count", "Rx1Tx1"),
+        ("rx2_detachment_duration_s", "Rx2Tx2 duration", "Rx2Tx2"),
+        ("rx2_change_points_until_offset_or_last", "Rx2Tx2 change-point count", "Rx2Tx2"),
+        ("rx2_minus_rx1_offset_s", "Rx2Tx2 minus Rx1Tx1 offset", "channel_difference"),
+    ]
+    rows = []
+    for dataset, group in comparison.groupby("dataset", dropna=False):
+        for column, label, channel in metric_specs:
+            if column not in group.columns:
+                continue
+            vals = pd.to_numeric(group[column], errors="coerce").dropna()
+            if vals.empty:
+                continue
+            mean = float(vals.mean())
+            std = float(vals.std()) if len(vals) > 1 else np.nan
+            cv = float(std / abs(mean) * 100) if len(vals) > 1 and mean != 0 and pd.notna(std) else np.nan
+            flag = repeatability_flag_from_cv(cv)
+            rows.append(
+                {
+                    "dataset": dataset,
+                    "channel_or_scope": channel,
+                    "metric": label,
+                    "metric_column": column,
+                    "n_repetitions": int(vals.shape[0]),
+                    "mean": mean,
+                    "std": std,
+                    "cv_percent": cv,
+                    "min": float(vals.min()),
+                    "max": float(vals.max()),
+                    "repeatability_flag": flag,
+                    "interpretation": f"{dataset} {label}: CV {fmt_num(cv, 1)}%; {flag}.",
+                }
+            )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["dataset", "metric", "channel_or_scope"])
+
+
+def detachment_group_stats(comparison: pd.DataFrame, value_col: str, group_col: str = "dataset") -> pd.DataFrame:
+    rows = []
+    for dataset, group in comparison.groupby(group_col, dropna=False):
+        vals = pd.to_numeric(group[value_col], errors="coerce").dropna()
+        if vals.empty:
+            continue
+        rows.append(
+            {
+                group_col: dataset,
+                "mean": float(vals.mean()),
+                "std": float(vals.std()) if len(vals) > 1 else 0.0,
+                "n": int(vals.shape[0]),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def make_grouped_bar_figure(
+    stats_by_series: dict[str, pd.DataFrame],
+    title: str,
+    y_label: str,
+    filename: str,
+) -> Path | None:
+    datasets = []
+    for stats in stats_by_series.values():
+        if stats.empty:
+            continue
+        for dataset in stats["dataset"].tolist():
+            if dataset not in datasets:
+                datasets.append(dataset)
+    if not datasets:
+        return None
+    fig_dir = OUTPUT_DIR / "figures_lab"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    path = fig_dir / filename
+    img = Image.new("RGB", (1150, 650), "white")
+    draw = ImageDraw.Draw(img)
+    font, small = get_fonts()
+    colors = {
+        "summary": "#2ca02c",
+        "preferred Rx2Tx2": "#ff7f0e",
+        "Rx1Tx1": "#1f77b4",
+        "Rx2Tx2": "#d6278b",
+    }
+    plot = (95, 80, 1080, 500)
+    draw.text((300, 25), title, fill="#111111", font=font)
+    draw.rectangle(plot, outline="#444444", width=1)
+    max_val = 0.0
+    for stats in stats_by_series.values():
+        if not stats.empty:
+            max_val = max(max_val, float((stats["mean"] + stats["std"].fillna(0)).max()))
+    max_val = max(max_val * 1.18, 1.0)
+    for i in range(6):
+        frac = i / 5
+        y = plot[3] - frac * (plot[3] - plot[1])
+        val = frac * max_val
+        draw.line((plot[0], y, plot[2], y), fill="#E5E7EB", width=1)
+        draw.text((35, y - 8), f"{val:.0f}", fill="#333333", font=small)
+    draw.text((plot[0], plot[1] - 25), f"Y: {y_label}", fill="#111111", font=small)
+    series = list(stats_by_series.keys())
+    group_width = (plot[2] - plot[0]) / max(len(datasets), 1)
+    bar_width = min(45, group_width / (len(series) + 1.5))
+    for d_idx, dataset in enumerate(datasets):
+        center = plot[0] + group_width * (d_idx + 0.5)
+        for s_idx, series_name in enumerate(series):
+            stats = stats_by_series[series_name]
+            row = stats[stats["dataset"].eq(dataset)]
+            if row.empty:
+                continue
+            mean = float(row.iloc[0]["mean"])
+            std = float(row.iloc[0].get("std", 0) or 0)
+            x0 = center - (len(series) * bar_width) / 2 + s_idx * bar_width
+            x1 = x0 + bar_width * 0.78
+            y0 = plot[3] - mean / max_val * (plot[3] - plot[1])
+            draw.rectangle((x0, y0, x1, plot[3]), fill=colors.get(series_name, "#777777"))
+            if std > 0:
+                e_top = plot[3] - (mean + std) / max_val * (plot[3] - plot[1])
+                e_bot = plot[3] - max(mean - std, 0) / max_val * (plot[3] - plot[1])
+                ex = (x0 + x1) / 2
+                draw.line((ex, e_top, ex, e_bot), fill="#111111", width=2)
+                draw.line((ex - 7, e_top, ex + 7, e_top), fill="#111111", width=2)
+                draw.line((ex - 7, e_bot, ex + 7, e_bot), fill="#111111", width=2)
+        draw.text((center - 55, plot[3] + 20), str(dataset), fill="#111111", font=small)
+    legend_x = 95
+    for idx, series_name in enumerate(series):
+        x = legend_x + idx * 185
+        draw.rectangle((x, 545, x + 22, 560), fill=colors.get(series_name, "#777777"))
+        draw.text((x + 30, 543), series_name, fill="#111111", font=small)
+    draw.text((95, 590), "Bars = mean across repetitions within experiment set; error bars = SD.", fill="#333333", font=small)
+    img.save(path)
+    return path
+
+
+def make_detachment_comparison_figures(comparison: pd.DataFrame) -> list[Path]:
+    if comparison.empty:
+        return []
+    paths: list[Path] = []
+    duration_series = {
+        "summary": detachment_group_stats(comparison, "summary_detachment_duration_s"),
+        "preferred Rx2Tx2": detachment_group_stats(comparison, "us_detachment_duration_s"),
+        "Rx1Tx1": detachment_group_stats(comparison, "rx1_detachment_duration_s"),
+        "Rx2Tx2": detachment_group_stats(comparison, "rx2_detachment_duration_s"),
+    }
+    p = make_grouped_bar_figure(duration_series, "Detachment duration across experiment sets", "Duration (s)", "detachment_duration_grouped_bars.png")
+    if p is not None:
+        paths.append(p)
+    cp_series = {
+        "preferred Rx2Tx2": detachment_group_stats(comparison, "us_change_points_until_offset_or_last"),
+        "Rx1Tx1": detachment_group_stats(comparison, "rx1_change_points_until_offset_or_last"),
+        "Rx2Tx2": detachment_group_stats(comparison, "rx2_change_points_until_offset_or_last"),
+    }
+    p = make_grouped_bar_figure(cp_series, "Positive change-point counts across experiment sets", "Change points", "detachment_change_point_counts_grouped_bars.png")
+    if p is not None:
+        paths.append(p)
+    offset_series = {
+        "Rx1Tx1": detachment_group_stats(comparison, "rx1_offset_s"),
+        "Rx2Tx2": detachment_group_stats(comparison, "rx2_offset_s"),
+    }
+    p = make_grouped_bar_figure(offset_series, "US detachment offset times across experiment sets", "Absolute time (s)", "detachment_offsets_grouped_bars.png")
+    if p is not None:
+        paths.append(p)
+    return paths
+
+
 def get_fonts() -> tuple[ImageFont.ImageFont, ImageFont.ImageFont]:
     try:
         return ImageFont.truetype("arial.ttf", 16), ImageFont.truetype("arial.ttf", 12)
@@ -2322,30 +2505,36 @@ def concise_readme() -> pd.DataFrame:
             },
             {
                 "part": "4",
-                "sheet": "4 Detachment Summary vs US",
+                "sheet": "4 Detachment CV",
+                "what_it_answers": "How repeatable are detachment duration, offset differences, and change-point counts within each experiment set?",
+                "how_to_read": "This is the preliminary within-set CV check. A high Trials effect later means sets differ from each other; high CV here means repetitions inside the same set are not repeatable.",
+            },
+            {
+                "part": "5",
+                "sheet": "5 Detachment Summary vs US",
                 "what_it_answers": "Do manually summarized detachment completion/duration and US-derived detachment offset agree?",
                 "how_to_read": "Rx2Tx2 is used as the preferred channel when present. Rx1Tx1 and Rx2Tx2 are both kept in separate columns so channel disagreement is visible.",
             },
             {
-                "part": "5",
-                "sheet": "5 Detachment Statistics",
+                "part": "6",
+                "sheet": "6 Detachment Statistics",
                 "what_it_answers": "Which experimental factors are associated with detachment duration, full-offset probability, and change-point count?",
                 "how_to_read": "Eta-squared screens setup effects; correlation rows compare summary-derived and US-derived detachment behavior. Treat this as exploratory because n is small.",
             },
             {
-                "part": "6",
+                "part": "7",
                 "sheet": "US Rupture Decisions",
                 "what_it_answers": "For each repetition, sensor code, and primary US channel, was full detachment reached and at what offset time?",
                 "how_to_read": "A time is reported only if a positive change point reaches the pre-deposition minus 15% threshold. Otherwise the status is partial.",
             },
             {
-                "part": "7",
+                "part": "8",
                 "sheet": "US Change Points",
                 "what_it_answers": "Which positive/upward US change points were detected and did they pass the threshold?",
                 "how_to_read": "This is the audit trail behind the detachment offset decision.",
             },
             {
-                "part": "8",
+                "part": "9",
                 "sheet": "Zone and US Figures / Rupture Decision Figures",
                 "what_it_answers": "Visual checks for zones, onset, full-detachment offsets, rupture points, and threshold criteria.",
                 "how_to_read": "Red offset lines are only drawn where full detachment was detected.",
@@ -2375,8 +2564,9 @@ def build_revised_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFr
         "1 Summary Factor Effects": factor_effects_for_summary(tables),
         "2 Repeatability CV": repeatability,
         "3 Temp Explains Outcomes": targeted_temp_outcome_links(tables, repeatability),
-        "4 Detachment Summary vs US": detachment_comparison,
-        "5 Detachment Statistics": detachment_behavior_statistics(tables, detachment_comparison),
+        "4 Detachment CV": detachment_repeatability_cv(detachment_comparison),
+        "5 Detachment Summary vs US": detachment_comparison,
+        "6 Detachment Statistics": detachment_behavior_statistics(tables, detachment_comparison),
         "US Rupture Decisions": detachment_offset,
         "US Change Points": detachment_change_point_summary(detachment_offset),
     }
@@ -2440,6 +2630,7 @@ def build_report() -> Path:
     _, detailed_change_points_for_figures = lab_detachment_analysis(tables)
     zone_figures = make_lab_zone_us_figures(zones_for_figures, rupture_decisions)
     rupture_figures = make_lab_rupture_figures(rupture_decisions, detailed_change_points_for_figures)
+    detachment_figures = make_detachment_comparison_figures(report_tables["5 Detachment Summary vs US"])
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -2455,7 +2646,7 @@ def build_report() -> Path:
                         f"{col}2:{col}{ws.max_row}",
                         ColorScaleRule(start_type="min", start_color="63BE7B", mid_type="percentile", mid_value=50, mid_color="FFEB84", end_type="max", end_color="F8696B"),
                     )
-        if name == "2 Repeatability CV" and ws.max_row > 1:
+        if name in {"2 Repeatability CV", "4 Detachment CV"} and ws.max_row > 1:
             for header in ws[1]:
                 if header.value == "cv_percent":
                     col = get_column_letter(header.column)
@@ -2477,6 +2668,23 @@ def build_report() -> Path:
                         f"{col}2:{col}{ws.max_row}",
                         ColorScaleRule(start_type="min", start_color="63BE7B", mid_type="percentile", mid_value=50, mid_color="FFEB84", end_type="max", end_color="F8696B"),
                     )
+        if name == "6 Detachment Statistics" and ws.max_row > 1:
+            for header in ws[1]:
+                if header.value == "eta2_effect_size":
+                    col = get_column_letter(header.column)
+                    ws.conditional_formatting.add(
+                        f"{col}2:{col}{ws.max_row}",
+                        ColorScaleRule(start_type="min", start_color="63BE7B", mid_type="percentile", mid_value=50, mid_color="FFEB84", end_type="max", end_color="F8696B"),
+                    )
+    ws = wb.create_sheet("Detachment Comparison Figures")
+    row = 1
+    for path in detachment_figures:
+        ws.cell(row, 1, path.name)
+        img = ExcelImage(str(path))
+        img.width = 980
+        img.height = 554
+        ws.add_image(img, f"A{row + 1}")
+        row += 34
     ws = wb.create_sheet("Zone and US Figures")
     row = 1
     for path in zone_figures:

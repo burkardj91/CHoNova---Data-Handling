@@ -1940,6 +1940,171 @@ def detachment_change_point_summary(detachment_offset: pd.DataFrame) -> pd.DataF
     return out
 
 
+def detachment_summary_comparison(tables: dict[str, pd.DataFrame], detachment_offset: pd.DataFrame) -> pd.DataFrame:
+    if detachment_offset.empty:
+        return pd.DataFrame()
+    landmarks = tables["Parsed Landmarks"].copy()
+    if landmarks.empty:
+        return pd.DataFrame()
+    rows = []
+    for rep_id, group in detachment_offset.groupby("rep_id", dropna=False):
+        lm_group = landmarks[landmarks["rep_id"].eq(rep_id)]
+        if lm_group.empty:
+            continue
+        lm22 = lm_group[lm_group["sensor_code"].astype(str).eq("22")]
+        lm11 = lm_group[lm_group["sensor_code"].astype(str).eq("11")]
+        lm_pref = lm22.iloc[0] if not lm22.empty else lm11.iloc[0]
+        meta = PROCESS_START_TIMES.get(rep_id, {})
+        cooling_start = float(meta.get("cooling_start_s", np.nan))
+        summary_completion_rel = pd.to_numeric(pd.Series([lm_pref.get("Detachment Completion (rel.)")]), errors="coerce").iloc[0]
+        summary_onset_rel = pd.to_numeric(pd.Series([lm_pref.get("Detachment Onset (rel.)")]), errors="coerce").iloc[0]
+        summary_duration = pd.to_numeric(pd.Series([lm_pref.get("Detachment Duration")]), errors="coerce").iloc[0]
+        summary_completion_abs = cooling_start + summary_completion_rel if pd.notna(cooling_start) and pd.notna(summary_completion_rel) else np.nan
+        summary_onset_abs = cooling_start + summary_onset_rel if pd.notna(cooling_start) and pd.notna(summary_onset_rel) else np.nan
+
+        rx2 = group[group["channel"].eq("Rx2Tx2")]
+        rx1 = group[group["channel"].eq("Rx1Tx1")]
+        pref = rx2.iloc[0] if not rx2.empty else (rx1.iloc[0] if not rx1.empty else None)
+        if pref is None:
+            continue
+        rx1_row = rx1.iloc[0] if not rx1.empty else pd.Series(dtype=object)
+        rx2_row = rx2.iloc[0] if not rx2.empty else pd.Series(dtype=object)
+        us_offset = pd.to_numeric(pd.Series([pref.get("detachment_offset_s")]), errors="coerce").iloc[0]
+        us_onset = pd.to_numeric(pd.Series([pref.get("detachment_onset_absolute_s")]), errors="coerce").iloc[0]
+        us_duration = us_offset - us_onset if pd.notna(us_offset) and pd.notna(us_onset) else np.nan
+        rx1_offset = pd.to_numeric(pd.Series([rx1_row.get("detachment_offset_s", np.nan)]), errors="coerce").iloc[0]
+        rx2_offset = pd.to_numeric(pd.Series([rx2_row.get("detachment_offset_s", np.nan)]), errors="coerce").iloc[0]
+        rx1_onset = pd.to_numeric(pd.Series([rx1_row.get("detachment_onset_absolute_s", np.nan)]), errors="coerce").iloc[0]
+        rx2_onset = pd.to_numeric(pd.Series([rx2_row.get("detachment_onset_absolute_s", np.nan)]), errors="coerce").iloc[0]
+        rx1_duration = rx1_offset - rx1_onset if pd.notna(rx1_offset) and pd.notna(rx1_onset) else np.nan
+        rx2_duration = rx2_offset - rx2_onset if pd.notna(rx2_offset) and pd.notna(rx2_onset) else np.nan
+        full_both = bool(
+            rx1_row.get("detachment_offset_status") == "full_detachment_for_channel"
+            and rx2_row.get("detachment_offset_status") == "full_detachment_for_channel"
+        )
+        rows.append(
+            {
+                "dataset": lm_pref.get("dataset", ""),
+                "rep_id": rep_id,
+                "preferred_channel": pref["channel"],
+                "preferred_rule": "Rx2Tx2 preferred when present; Rx1Tx1 retained as comparison/fallback.",
+                "summary_sensor_code_used": lm_pref.get("sensor_code", ""),
+                "summary_detachment_onset_abs_s": summary_onset_abs,
+                "summary_detachment_completion_abs_s": summary_completion_abs,
+                "summary_detachment_duration_s": summary_duration,
+                "us_detachment_onset_abs_s": us_onset,
+                "us_detachment_offset_s": us_offset,
+                "us_detachment_duration_s": us_duration,
+                "us_offset_status": pref.get("detachment_offset_status", ""),
+                "us_change_points_until_offset_or_last": pref.get("change_points_until_detachment_or_last", np.nan),
+                "us_level_at_decision": pref.get("us_level_at_decision", np.nan),
+                "summary_minus_us_offset_s": summary_completion_abs - us_offset if pd.notna(summary_completion_abs) and pd.notna(us_offset) else np.nan,
+                "summary_minus_us_duration_s": summary_duration - us_duration if pd.notna(summary_duration) and pd.notna(us_duration) else np.nan,
+                "rx1_status": rx1_row.get("detachment_offset_status", ""),
+                "rx1_offset_s": rx1_offset,
+                "rx1_detachment_duration_s": rx1_duration,
+                "rx1_change_points_until_offset_or_last": rx1_row.get("change_points_until_detachment_or_last", np.nan),
+                "rx2_status": rx2_row.get("detachment_offset_status", ""),
+                "rx2_offset_s": rx2_offset,
+                "rx2_detachment_duration_s": rx2_duration,
+                "rx2_change_points_until_offset_or_last": rx2_row.get("change_points_until_detachment_or_last", np.nan),
+                "rx2_minus_rx1_offset_s": rx2_offset - rx1_offset if pd.notna(rx1_offset) and pd.notna(rx2_offset) else np.nan,
+                "rx2_minus_rx1_duration_s": rx2_duration - rx1_duration if pd.notna(rx1_duration) and pd.notna(rx2_duration) else np.nan,
+                "both_channels_full_offset": full_both,
+                "interpretation": (
+                    f"{rep_id}: preferred {pref['channel']} is {pref.get('detachment_offset_status', '')}. "
+                    f"Summary completion minus US offset = {fmt_num(summary_completion_abs - us_offset if pd.notna(summary_completion_abs) and pd.notna(us_offset) else np.nan, 1)} s; "
+                    f"Rx2 minus Rx1 offset = {fmt_num(rx2_offset - rx1_offset if pd.notna(rx1_offset) and pd.notna(rx2_offset) else np.nan, 1)} s."
+                ),
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["dataset", "rep_id"])
+
+
+def detachment_behavior_statistics(tables: dict[str, pd.DataFrame], comparison: pd.DataFrame) -> pd.DataFrame:
+    if comparison.empty:
+        return pd.DataFrame()
+    setup_cols = [c for c in MAIN_FACTORS if c in tables["Parsed Landmarks"].columns]
+    setup = tables["Parsed Landmarks"][["rep_id", *setup_cols]].drop_duplicates("rep_id")
+    work = comparison.merge(setup, on="rep_id", how="left")
+    work["preferred_full_offset_binary"] = work["us_offset_status"].eq("full_detachment_for_channel").astype(float)
+    work["both_channels_full_offset_binary"] = work["both_channels_full_offset"].astype(float)
+    metric_specs = [
+        ("summary_detachment_duration_s", "summary detachment duration"),
+        ("us_detachment_duration_s", "US preferred-channel detachment duration"),
+        ("us_change_points_until_offset_or_last", "US preferred-channel change-point count"),
+        ("rx1_detachment_duration_s", "Rx1Tx1 detachment duration"),
+        ("rx1_change_points_until_offset_or_last", "Rx1Tx1 change-point count"),
+        ("rx2_detachment_duration_s", "Rx2Tx2 detachment duration"),
+        ("rx2_change_points_until_offset_or_last", "Rx2Tx2 change-point count"),
+        ("summary_minus_us_offset_s", "summary minus US offset time"),
+        ("summary_minus_us_duration_s", "summary minus US duration"),
+        ("rx2_minus_rx1_offset_s", "Rx2Tx2 minus Rx1Tx1 offset time"),
+        ("preferred_full_offset_binary", "preferred channel full-offset probability"),
+        ("both_channels_full_offset_binary", "both channels full-offset probability"),
+    ]
+    rows = []
+    for response, label in metric_specs:
+        if response not in work.columns:
+            continue
+        for factor in [f for f in setup_cols if f in work.columns]:
+            eta2, n_levels, strength = effect_size_eta2(work, response, factor)
+            n = int(work[[response, factor]].dropna().shape[0])
+            if n < 3 or n_levels < 2:
+                continue
+            rows.append(
+                {
+                    "assessment": "experimental factor effect on detachment behavior",
+                    "metric": label,
+                    "metric_column": response,
+                    "independent_variable": factor,
+                    "n_measurements": n,
+                    "n_factor_levels": n_levels,
+                    "eta2_effect_size": eta2,
+                    "effect_strength": strength,
+                    "largest_mean_difference": best_group_difference(work, response, factor),
+                    "interpretation": (
+                        f"{factor} shows a {strength} screened association with {label}; "
+                        f"largest mean contrast: {best_group_difference(work, response, factor)}."
+                    ),
+                    "method_note": "Exploratory eta-squared screening; small n, not a confirmatory mixed-effects p-value.",
+                }
+            )
+    for x_col, y_col, label in [
+        ("summary_detachment_duration_s", "us_detachment_duration_s", "summary duration vs US preferred duration"),
+        ("summary_detachment_completion_abs_s", "us_detachment_offset_s", "summary completion vs US preferred offset"),
+        ("summary_detachment_duration_s", "rx2_detachment_duration_s", "summary duration vs Rx2Tx2 duration"),
+        ("summary_detachment_duration_s", "rx1_detachment_duration_s", "summary duration vs Rx1Tx1 duration"),
+        ("rx1_detachment_duration_s", "rx2_detachment_duration_s", "Rx1Tx1 duration vs Rx2Tx2 duration"),
+        ("rx1_change_points_until_offset_or_last", "rx2_change_points_until_offset_or_last", "Rx1Tx1 CP count vs Rx2Tx2 CP count"),
+    ]:
+        if x_col not in work.columns or y_col not in work.columns:
+            continue
+        r, n = pearson_r(work[x_col], work[y_col])
+        rows.append(
+            {
+                "assessment": "summary/US agreement or channel agreement",
+                "metric": label,
+                "metric_column": f"{x_col} vs {y_col}",
+                "independent_variable": "correlation",
+                "n_measurements": n,
+                "n_factor_levels": np.nan,
+                "eta2_effect_size": np.nan,
+                "effect_strength": corr_strength(r),
+                "largest_mean_difference": "",
+                "interpretation": f"{label}: r={fmt_num(r)}, n={n}; {corr_strength(r)} agreement.",
+                "method_note": "Pearson correlation on available full-offset numeric pairs; partial/no-offset rows are excluded from numeric duration/offset correlations.",
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["assessment", "metric", "eta2_effect_size"], ascending=[True, True, False])
+
+
 def get_fonts() -> tuple[ImageFont.ImageFont, ImageFont.ImageFont]:
     try:
         return ImageFont.truetype("arial.ttf", 16), ImageFont.truetype("arial.ttf", 12)
@@ -2157,18 +2322,30 @@ def concise_readme() -> pd.DataFrame:
             },
             {
                 "part": "4",
+                "sheet": "4 Detachment Summary vs US",
+                "what_it_answers": "Do manually summarized detachment completion/duration and US-derived detachment offset agree?",
+                "how_to_read": "Rx2Tx2 is used as the preferred channel when present. Rx1Tx1 and Rx2Tx2 are both kept in separate columns so channel disagreement is visible.",
+            },
+            {
+                "part": "5",
+                "sheet": "5 Detachment Statistics",
+                "what_it_answers": "Which experimental factors are associated with detachment duration, full-offset probability, and change-point count?",
+                "how_to_read": "Eta-squared screens setup effects; correlation rows compare summary-derived and US-derived detachment behavior. Treat this as exploratory because n is small.",
+            },
+            {
+                "part": "6",
                 "sheet": "US Rupture Decisions",
                 "what_it_answers": "For each repetition, sensor code, and primary US channel, was full detachment reached and at what offset time?",
                 "how_to_read": "A time is reported only if a positive change point reaches the pre-deposition minus 15% threshold. Otherwise the status is partial.",
             },
             {
-                "part": "5",
+                "part": "7",
                 "sheet": "US Change Points",
                 "what_it_answers": "Which positive/upward US change points were detected and did they pass the threshold?",
                 "how_to_read": "This is the audit trail behind the detachment offset decision.",
             },
             {
-                "part": "6",
+                "part": "8",
                 "sheet": "Zone and US Figures / Rupture Decision Figures",
                 "what_it_answers": "Visual checks for zones, onset, full-detachment offsets, rupture points, and threshold criteria.",
                 "how_to_read": "Red offset lines are only drawn where full detachment was detected.",
@@ -2192,11 +2369,14 @@ def concise_readme() -> pd.DataFrame:
 def build_revised_tables(tables: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
     repeatability = repeatability_cv_summary(tables)
     detachment_offset, detachment_change_points = lab_detachment_analysis(tables)
+    detachment_comparison = detachment_summary_comparison(tables, detachment_offset)
     return {
         "Read Me": concise_readme(),
         "1 Summary Factor Effects": factor_effects_for_summary(tables),
         "2 Repeatability CV": repeatability,
         "3 Temp Explains Outcomes": targeted_temp_outcome_links(tables, repeatability),
+        "4 Detachment Summary vs US": detachment_comparison,
+        "5 Detachment Statistics": detachment_behavior_statistics(tables, detachment_comparison),
         "US Rupture Decisions": detachment_offset,
         "US Change Points": detachment_change_point_summary(detachment_offset),
     }

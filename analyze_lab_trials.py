@@ -2298,6 +2298,91 @@ def make_grouped_bar_figure(
     return path
 
 
+def make_full_sensor_count_distribution_figure(comparison: pd.DataFrame) -> Path | None:
+    if comparison.empty or "complete_detachment_sensor_count" not in comparison.columns:
+        return None
+    fig_dir = OUTPUT_DIR / "figures_lab"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    path = fig_dir / "detachment_full_sensor_counts_grouped_bars.png"
+    datasets = list(dict.fromkeys(comparison["dataset"].dropna().tolist()))
+    if not datasets:
+        return None
+
+    counts: dict[str, dict[int, int]] = {}
+    max_n = 0
+    for dataset in datasets:
+        vals = pd.to_numeric(
+            comparison.loc[comparison["dataset"].eq(dataset), "complete_detachment_sensor_count"],
+            errors="coerce",
+        ).dropna()
+        c = {0: 0, 1: 0, 2: 0}
+        for value in vals.astype(int):
+            if value in c:
+                c[value] += 1
+        counts[dataset] = c
+        max_n = max(max_n, int(vals.shape[0]))
+    max_n = max(max_n, 1)
+
+    img = Image.new("RGB", (1150, 650), "white")
+    draw = ImageDraw.Draw(img)
+    font, small = get_fonts()
+    title = "Full detachment outcome by experiment set"
+    draw.text((355, 25), title, fill="#111111", font=font)
+    plot = (115, 95, 1080, 490)
+    draw.rectangle(plot, outline="#444444", width=1)
+    for i in range(max_n + 1):
+        frac = i / max_n
+        y = plot[3] - frac * (plot[3] - plot[1])
+        draw.line((plot[0], y, plot[2], y), fill="#E5E7EB", width=1)
+        draw.text((65, y - 8), str(i), fill="#333333", font=small)
+    draw.text((plot[0], plot[1] - 25), "Y: number of repetitions", fill="#111111", font=small)
+
+    colors = {
+        0: "#BDBDBD",
+        1: "#F59E0B",
+        2: "#2CA02C",
+    }
+    labels = {
+        0: "0 sensors full",
+        1: "1 sensor full",
+        2: "2 sensors full",
+    }
+    group_width = (plot[2] - plot[0]) / max(len(datasets), 1)
+    bar_width = min(95, group_width * 0.42)
+    for d_idx, dataset in enumerate(datasets):
+        center = plot[0] + group_width * (d_idx + 0.5)
+        x0 = center - bar_width / 2
+        x1 = center + bar_width / 2
+        y_base = plot[3]
+        for sensor_count in [0, 1, 2]:
+            n = counts[dataset][sensor_count]
+            if n <= 0:
+                continue
+            height = n / max_n * (plot[3] - plot[1])
+            y_top = y_base - height
+            draw.rectangle((x0, y_top, x1, y_base), fill=colors[sensor_count])
+            label_y = (y_top + y_base) / 2 - 8
+            draw.text((x0 + 10, label_y), str(n), fill="#111111", font=small)
+            y_base = y_top
+        total = sum(counts[dataset].values())
+        draw.text((center - 48, plot[3] + 18), str(dataset), fill="#111111", font=small)
+        draw.text((center - 18, plot[3] + 40), f"n={total}", fill="#555555", font=small)
+
+    legend_x = 115
+    for idx, sensor_count in enumerate([0, 1, 2]):
+        x = legend_x + idx * 175
+        draw.rectangle((x, 545, x + 22, 560), fill=colors[sensor_count])
+        draw.text((x + 30, 543), labels[sensor_count], fill="#111111", font=small)
+    draw.text(
+        (115, 590),
+        "Each stacked bar shows repetitions, not a mean. Counts inside bars indicate how many runs had 0, 1, or 2 sensors fully detached.",
+        fill="#333333",
+        font=small,
+    )
+    img.save(path)
+    return path
+
+
 def make_detachment_comparison_figures(comparison: pd.DataFrame) -> list[Path]:
     if comparison.empty:
         return []
@@ -2323,10 +2408,7 @@ def make_detachment_comparison_figures(comparison: pd.DataFrame) -> list[Path]:
     p = make_grouped_bar_figure(offset_series, "US detachment offset times across experiment sets", "Absolute time (s)", "detachment_offsets_grouped_bars.png")
     if p is not None:
         paths.append(p)
-    count_series = {
-        "Full sensor count": detachment_group_stats(comparison, "complete_detachment_sensor_count"),
-    }
-    p = make_grouped_bar_figure(count_series, "Number of sensors with full detachment across experiment sets", "Sensors with full detachment", "detachment_full_sensor_counts_grouped_bars.png")
+    p = make_full_sensor_count_distribution_figure(comparison)
     if p is not None:
         paths.append(p)
     return paths

@@ -1967,6 +1967,9 @@ def detachment_summary_comparison(tables: dict[str, pd.DataFrame], detachment_of
         rx2_onset = pd.to_numeric(pd.Series([rx2_row.get("detachment_onset_absolute_s", np.nan)]), errors="coerce").iloc[0]
         rx1_duration = rx1_offset - rx1_onset if pd.notna(rx1_offset) and pd.notna(rx1_onset) else np.nan
         rx2_duration = rx2_offset - rx2_onset if pd.notna(rx2_offset) and pd.notna(rx2_onset) else np.nan
+        primary_offset_rel = primary_offset - cooling_start if pd.notna(primary_offset) and pd.notna(cooling_start) else np.nan
+        rx1_offset_rel = rx1_offset - cooling_start if pd.notna(rx1_offset) and pd.notna(cooling_start) else np.nan
+        rx2_offset_rel = rx2_offset - cooling_start if pd.notna(rx2_offset) and pd.notna(cooling_start) else np.nan
         full_both = bool(
             rx1_row.get("detachment_offset_status") == "full_detachment_for_channel"
             and rx2_row.get("detachment_offset_status") == "full_detachment_for_channel"
@@ -1981,22 +1984,26 @@ def detachment_summary_comparison(tables: dict[str, pd.DataFrame], detachment_of
                 "dataset": lm_pref.get("dataset", ""),
                 "rep_id": rep_id,
                 "raw_sheet": "at" + rep_id,
+                "cooling_start_s": cooling_start,
                 "primary_channel": primary["channel"],
                 "primary_rule": "Rx2Tx2 is the primary comparison channel when present; Rx1Tx1 is retained as parallel-sensor validation.",
                 "summary_sensor_code_used": lm_pref.get("sensor_code", ""),
                 "summary_detachment_onset_abs_s": summary_onset_abs,
                 "primary_detachment_onset_abs_s": primary_onset,
                 "primary_us_offset_s": primary_offset,
+                "primary_us_offset_rel_to_cooling_s": primary_offset_rel,
                 "primary_us_detachment_duration_s": primary_duration,
                 "primary_us_offset_status": primary.get("detachment_offset_status", ""),
                 "primary_us_change_points_until_offset_or_last": primary.get("change_points_until_detachment_or_last", np.nan),
                 "primary_us_level_at_decision": primary.get("us_level_at_decision", np.nan),
                 "rx1_status": rx1_row.get("detachment_offset_status", ""),
                 "rx1_offset_s": rx1_offset,
+                "rx1_offset_rel_to_cooling_s": rx1_offset_rel,
                 "rx1_detachment_duration_s": rx1_duration,
                 "rx1_change_points_until_offset_or_last": rx1_row.get("change_points_until_detachment_or_last", np.nan),
                 "rx2_status": rx2_row.get("detachment_offset_status", ""),
                 "rx2_offset_s": rx2_offset,
+                "rx2_offset_rel_to_cooling_s": rx2_offset_rel,
                 "rx2_detachment_duration_s": rx2_duration,
                 "rx2_change_points_until_offset_or_last": rx2_row.get("change_points_until_detachment_or_last", np.nan),
                 "rx2_minus_rx1_offset_s": rx2_offset - rx1_offset if pd.notna(rx1_offset) and pd.notna(rx2_offset) else np.nan,
@@ -2153,9 +2160,9 @@ def detachment_figure_data_used(comparison: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame()
     rows = []
     for _, row in comparison.iterrows():
-        for channel, status_col, duration_col, offset_col, cp_col in [
-            ("Rx1Tx1", "rx1_status", "rx1_detachment_duration_s", "rx1_offset_s", "rx1_change_points_until_offset_or_last"),
-            ("Rx2Tx2", "rx2_status", "rx2_detachment_duration_s", "rx2_offset_s", "rx2_change_points_until_offset_or_last"),
+        for channel, status_col, duration_col, offset_col, rel_offset_col, cp_col in [
+            ("Rx1Tx1", "rx1_status", "rx1_detachment_duration_s", "rx1_offset_s", "rx1_offset_rel_to_cooling_s", "rx1_change_points_until_offset_or_last"),
+            ("Rx2Tx2", "rx2_status", "rx2_detachment_duration_s", "rx2_offset_s", "rx2_offset_rel_to_cooling_s", "rx2_change_points_until_offset_or_last"),
         ]:
             full = row.get(status_col) == "full_detachment_for_channel"
             rows.append(
@@ -2168,7 +2175,8 @@ def detachment_figure_data_used(comparison: pd.DataFrame) -> pd.DataFrame:
                     "used_in_duration_and_offset_figures": bool(full and pd.notna(row.get(duration_col)) and pd.notna(row.get(offset_col))),
                     "used_in_change_point_count_figure": pd.notna(row.get(cp_col)),
                     "detachment_duration_s": row.get(duration_col, np.nan),
-                    "detachment_offset_s": row.get(offset_col, np.nan),
+                    "detachment_offset_absolute_s": row.get(offset_col, np.nan),
+                    "detachment_offset_rel_to_cooling_s": row.get(rel_offset_col, np.nan),
                     "change_points_until_offset_or_last": row.get(cp_col, np.nan),
                     "complete_detachment_sensor_count_for_rep": row.get("complete_detachment_sensor_count", np.nan),
                     "complete_detachment_sensors_for_rep": row.get("complete_detachment_sensors", ""),
@@ -2402,10 +2410,10 @@ def make_detachment_comparison_figures(comparison: pd.DataFrame) -> list[Path]:
     if p is not None:
         paths.append(p)
     offset_series = {
-        "Rx1Tx1": detachment_group_stats(comparison, "rx1_offset_s"),
-        "Rx2Tx2": detachment_group_stats(comparison, "rx2_offset_s"),
+        "Rx1Tx1": detachment_group_stats(comparison, "rx1_offset_rel_to_cooling_s"),
+        "Rx2Tx2": detachment_group_stats(comparison, "rx2_offset_rel_to_cooling_s"),
     }
-    p = make_grouped_bar_figure(offset_series, "US detachment offset times across experiment sets", "Absolute time (s)", "detachment_offsets_grouped_bars.png")
+    p = make_grouped_bar_figure(offset_series, "US detachment offset after cooling start across experiment sets", "Time after cooling start (s)", "detachment_offsets_grouped_bars.png")
     if p is not None:
         paths.append(p)
     p = make_full_sensor_count_distribution_figure(comparison)
@@ -2657,7 +2665,7 @@ def concise_readme() -> pd.DataFrame:
                 "part": "8",
                 "sheet": "Detachment Figure Data",
                 "what_it_answers": "Which exact repetitions were used in the detachment bar plots?",
-                "how_to_read": "Duration and offset plots use only full-detachment rows for that sensor. Change-point count plots include available diagnostic counts, including partial rows.",
+                "how_to_read": "Duration and offset plots use only full-detachment rows for that sensor. Offset comparisons are relative to each trial cooling start. Change-point count plots include available diagnostic counts, including partial rows.",
             },
             {
                 "part": "9",

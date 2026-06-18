@@ -1,0 +1,89 @@
+profile_id: lab_trials
+display_name: Lab Trials
+description: >
+  Reusable profile for laboratory chocolate crystallization trials with
+  multiple batches and repetitions stored in Excel workbooks.
+
+mould:
+  width_mm: 15.6
+  height_mm: 7.8
+
+sensors:
+  temp_product:
+    - T1
+    - T3
+    - T4
+    - T5
+  temp_mould:
+    - T2
+  temp_ambient:
+    - T6
+  primary_us_sensors:
+    - Rx1Tx1
+    - Rx2Tx2
+  all_us_sensors:
+    - Rx1Tx1
+    - Rx2Tx2
+    - Rx1Tx2
+    - Rx2Tx1
+
+temperature_sensor_coordinates_mm:
+  T1: [13.06, 3.89]
+  T2: [7.92, 3.89]
+  T3: [7.92, 6.39]
+  T4: [7.92, 1.31]
+  T5: [2.71, 3.89]
+
+ultrasound_sensor_coordinates_mm:
+  Rx1: [5.2, 6.3]
+  Tx1: [10.4, 6.3]
+  Rx2: [5.2, 1.5]
+  Tx2: [10.4, 1.5]
+
+zone_definitions:
+  time_basis: relative_to_cooling_start_unless_explicit_absolute_times_are_available
+  zones:
+    - zone: zone_1_deposition_to_cooling_start
+      start: deposition
+      end: cooling_start
+    - zone: zone_2_cooling_to_crystallization_start
+      start: cooling_start
+      end: crystallization_start
+    - zone: zone_3_crystallization_to_detachment_onset
+      start: crystallization_start
+      end: detachment_onset
+    - zone: zone_4_detachment_onset_to_detachment_offset
+      start: detachment_onset
+      end: detachment_completion
+
+analysis_defaults:
+  compare_within:
+    - batch
+    - experimental_setup
+  compare_by_metadata:
+    - Chocolate Recipe
+    - Cooling Configuration
+    - Cooling Temperature (°C)
+    - Cooling Speed (%)
+    - Tempering
+    - Tempering Degree
+  ultrasound_repeatability_metrics:
+    - mean
+    - standard_deviation
+    - range
+    - area_under_curve
+    - normalized_curve_rmse_to_group_mean
+    - correlation_to_group_mean
+  temperature_repeatability_metrics:
+    - mean
+    - min
+    - max
+    - slope
+    - product_sensor_spread
+    - deviation_from_group_mean
+
+notes:
+  - This profile is separate from Aasted 3 and must not reuse Aasted 3 mould geometry or zone rules.
+  - Product temperature sensors are T1, T3, T4, and T5.
+  - T2 is mould temperature and T6 is ambient temperature.
+  - Primary ultrasound sensors are Rx1Tx1 and Rx2Tx2.

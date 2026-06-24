@@ -10,8 +10,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from PIL import Image, ImageDraw, ImageFont
 
 from analyze_aasted_runs_zone_patterns import (
-    IRREGULAR_CSV,
+    COMPARISON_CSV,
+    COMPARISON_RUN_NAME,
     REFERENCE_CSV,
+    REFERENCE_RUN_NAME,
     OUTPUT_DIR,
     TEMP_SENSORS,
     build_seconds,
@@ -21,7 +23,7 @@ from analyze_aasted_runs_zone_patterns import (
 
 
 SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
-OUTPUT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_larger_ultrasound_panel.xlsx"
+OUTPUT_WORKBOOK = OUTPUT_DIR / "aasted3_old_configuration_comparison_report.xlsx"
 MOULD_WIDTH = 112.2
 MOULD_HEIGHT = 33.3
 
@@ -217,14 +219,14 @@ def write_table(ws, df: pd.DataFrame) -> None:
 
 def add_contour_sheets() -> Path:
     reference = read_run(REFERENCE_CSV)
-    irregular = read_run(IRREGULAR_CSV)
-    reference_zones = detect_pattern_zones(build_seconds(reference), "reference_2291-4160")
-    irregular_zones = detect_pattern_zones(build_seconds(irregular), "irregular_119-2290s")
-    zones = pd.concat([reference_zones, irregular_zones], ignore_index=True)
+    comparison = read_run(COMPARISON_CSV)
+    reference_zones = detect_pattern_zones(build_seconds(reference), REFERENCE_RUN_NAME)
+    comparison_zones = detect_pattern_zones(build_seconds(comparison), COMPARISON_RUN_NAME)
+    zones = pd.concat([reference_zones, comparison_zones], ignore_index=True)
     means = pd.concat(
         [
-            zone_temp_means(reference, reference_zones, "reference_2291-4160"),
-            zone_temp_means(irregular, irregular_zones, "irregular_119-2290s"),
+            zone_temp_means(reference, reference_zones, REFERENCE_RUN_NAME),
+            zone_temp_means(comparison, comparison_zones, COMPARISON_RUN_NAME),
         ],
         ignore_index=True,
     )
@@ -232,7 +234,7 @@ def add_contour_sheets() -> Path:
     for zone, group in means.groupby("zone"):
         zone_scales[zone] = scale_for_values(group[PRODUCT_CONTOUR_SENSORS].to_numpy(dtype=float).ravel())
     workbook = load_workbook(SOURCE_WORKBOOK)
-    for sheet_name in ["Contour Reference", "Contour Irregular", "Contour Data", "Sensor Coordinates"]:
+    for sheet_name in ["Contour Reference", "Contour Irregular", "Contour Old Configuration", "Contour Data", "Sensor Coordinates"]:
         if sheet_name in workbook.sheetnames:
             del workbook[sheet_name]
 
@@ -248,7 +250,7 @@ def add_contour_sheets() -> Path:
     data_ws = workbook.create_sheet("Contour Data", 3)
     write_table(data_ws, means)
 
-    for run_name, sheet_name in [("reference_2291-4160", "Contour Reference"), ("irregular_119-2290s", "Contour Irregular")]:
+    for run_name, sheet_name in [(REFERENCE_RUN_NAME, "Contour Reference"), (COMPARISON_RUN_NAME, "Contour Old Configuration")]:
         ws = workbook.create_sheet(sheet_name, 2 if run_name.startswith("reference") else 3)
         ws["A1"] = f"{run_name}: mean mould temperature contours by detected zone"
         ws["A1"].font = Font(bold=True, size=15, color="1F4E78")

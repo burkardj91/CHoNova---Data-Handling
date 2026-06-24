@@ -10,8 +10,10 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from PIL import Image, ImageDraw, ImageFont
 
 from analyze_aasted_runs_zone_patterns import (
-    IRREGULAR_CSV,
+    COMPARISON_CSV,
+    COMPARISON_RUN_NAME,
     REFERENCE_CSV,
+    REFERENCE_RUN_NAME,
     OUTPUT_DIR,
     TEMP_SENSORS,
     build_seconds,
@@ -20,7 +22,7 @@ from analyze_aasted_runs_zone_patterns import (
 )
 
 
-SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
+SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
 OUTPUT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
 TEMP_PLOT_SENSORS = ["T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"]
 ULTRASOUND_PLOT_CHANNELS = ["Rx1Tx1", "Rx2Tx2"]
@@ -275,12 +277,12 @@ def write_note(ws, text: str) -> None:
 def embed_figures() -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ref_png = OUTPUT_DIR / "reference_2291_4160_temperature_accz_zones.png"
-    irr_png = OUTPUT_DIR / "irregular_119_2290_temperature_accz_zones.png"
-    make_png("reference_2291-4160", REFERENCE_CSV, ref_png)
-    make_png("irregular_119-2290s", IRREGULAR_CSV, irr_png)
+    comparison_png = OUTPUT_DIR / "old_configuration_temperature_accz_zones.png"
+    make_png(REFERENCE_RUN_NAME, REFERENCE_CSV, ref_png)
+    make_png(COMPARISON_RUN_NAME, COMPARISON_CSV, comparison_png)
 
     wb = load_workbook(SOURCE_WORKBOOK)
-    for sheet_name in ["Figure Reference", "Figure Irregular"]:
+    for sheet_name in ["Figure Reference", "Figure Irregular", "Figure Old Configuration"]:
         if sheet_name in wb.sheetnames:
             del wb[sheet_name]
 
@@ -291,12 +293,12 @@ def embed_figures() -> Path:
     ref_img.height = 613
     ref_ws.add_image(ref_img, "A3")
 
-    irr_ws = wb.create_sheet("Figure Irregular", 1)
-    write_note(irr_ws, "Irregular run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
-    irr_img = XLImage(str(irr_png))
-    irr_img.width = 1120
-    irr_img.height = 613
-    irr_ws.add_image(irr_img, "A3")
+    comp_ws = wb.create_sheet("Figure Old Configuration", 1)
+    write_note(comp_ws, "Old-configuration comparison run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
+    comp_img = XLImage(str(comparison_png))
+    comp_img.width = 1120
+    comp_img.height = 613
+    comp_ws.add_image(comp_img, "A3")
 
     wb.save(OUTPUT_WORKBOOK)
     return OUTPUT_WORKBOOK

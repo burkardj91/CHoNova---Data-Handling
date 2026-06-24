@@ -13,8 +13,11 @@ from openpyxl.utils import get_column_letter
 
 WORKSPACE = Path(r"C:\Users\BurkardJohannes\Documents\CHoNova _ Data Understanding")
 OUTPUT_DIR = WORKSPACE / "outputs" / "aasted3_run_comparison"
-IRREGULAR_CSV = Path(r"C:\Users\BurkardJohannes\Desktop\Temp Files\Aasted 3\260604_aasted3_119-2290s.csv")
+COMPARISON_CSV = WORKSPACE / "inputs" / "aasted3" / "old_configuration.csv"
+IRREGULAR_CSV = COMPARISON_CSV  # Backward-compatible import name for helper scripts.
 REFERENCE_CSV = Path(r"C:\Users\BurkardJohannes\Desktop\Temp Files\Aasted 3\260604_aasted3_2291-4160.csv")
+REFERENCE_RUN_NAME = "reference_2291-4160"
+COMPARISON_RUN_NAME = "old-configuration"
 
 # Product temperature sensors. User correction listed "T2, T4, T4, T5, T7";
 # treat the duplicated T4 as T3 to keep five unique product locations.
@@ -355,18 +358,18 @@ def product_zone_summary(temp: pd.DataFrame) -> pd.DataFrame:
 def product_zone_delta(summary: pd.DataFrame) -> pd.DataFrame:
     pivot = summary.pivot_table(index=["zone", "sensor"], columns="run", values="mean_C").reset_index()
     pivot.columns.name = None
-    if "irregular_119-2290s" in pivot.columns and "reference_2291-4160" in pivot.columns:
-        pivot["mean_delta_irregular_minus_reference_C"] = (
-            pivot["irregular_119-2290s"] - pivot["reference_2291-4160"]
+    if COMPARISON_RUN_NAME in pivot.columns and REFERENCE_RUN_NAME in pivot.columns:
+        pivot["mean_delta_comparison_minus_reference_C"] = (
+            pivot[COMPARISON_RUN_NAME] - pivot[REFERENCE_RUN_NAME]
         )
     return pivot
 
 
 def duration_by_zone(reference_seconds: pd.DataFrame, map_df: pd.DataFrame) -> pd.DataFrame:
     ref_counts = reference_seconds.groupby("zone_reference").size().rename("reference_duration_s")
-    irr_counts = map_df.groupby("reference_zone").size().rename("irregular_pattern_duration_s")
-    out = pd.concat([ref_counts, irr_counts], axis=1).fillna(0).reset_index().rename(columns={"index": "zone"})
-    out["extra_duration_s"] = out["irregular_pattern_duration_s"] - out["reference_duration_s"]
+    comp_counts = map_df.groupby("reference_zone").size().rename("comparison_pattern_duration_s")
+    out = pd.concat([ref_counts, comp_counts], axis=1).fillna(0).reset_index().rename(columns={"index": "zone"})
+    out["extra_duration_s"] = out["comparison_pattern_duration_s"] - out["reference_duration_s"]
     order = {name: i for i, (_, _, name, _) in enumerate(ZONES)}
     out["order"] = out["zone"].map(order)
     return out.sort_values("order").drop(columns=["order"])
@@ -392,13 +395,13 @@ def mechanical_zone_summary(seconds: pd.DataFrame, run: str, zone_col: str) -> p
 
 
 def mechanical_delta(reference_seconds: pd.DataFrame, irregular_seconds: pd.DataFrame, map_df: pd.DataFrame) -> pd.DataFrame:
-    irr = irregular_seconds.copy()
+    comp = irregular_seconds.copy()
     mapper = map_df.set_index("irregular_elapsed_s")
-    irr["reference_zone"] = irr["elapsed_sec"].map(mapper["reference_zone"])
+    comp["reference_zone"] = comp["elapsed_sec"].map(mapper["reference_zone"])
     summary = pd.concat(
         [
-            mechanical_zone_summary(reference_seconds, "reference_2291-4160", "zone_reference"),
-            mechanical_zone_summary(irr, "irregular_119-2290s", "reference_zone"),
+            mechanical_zone_summary(reference_seconds, REFERENCE_RUN_NAME, "zone_reference"),
+            mechanical_zone_summary(comp, COMPARISON_RUN_NAME, "reference_zone"),
         ],
         ignore_index=True,
     )
@@ -409,15 +412,15 @@ def mechanical_delta(reference_seconds: pd.DataFrame, irregular_seconds: pd.Data
         row = {"zone": zone}
         notable = []
         for metric in metrics:
-            ref = pivot.loc[zone, (metric, "reference_2291-4160")] if (metric, "reference_2291-4160") in pivot else np.nan
-            irr = pivot.loc[zone, (metric, "irregular_119-2290s")] if (metric, "irregular_119-2290s") in pivot else np.nan
+            ref = pivot.loc[zone, (metric, REFERENCE_RUN_NAME)] if (metric, REFERENCE_RUN_NAME) in pivot else np.nan
+            comp_val = pivot.loc[zone, (metric, COMPARISON_RUN_NAME)] if (metric, COMPARISON_RUN_NAME) in pivot else np.nan
             row[f"reference_{metric}"] = ref
-            row[f"irregular_{metric}"] = irr
-            row[f"delta_{metric}"] = irr - ref
-            if pd.notna(ref) and pd.notna(irr):
-                if metric.startswith("T8") and abs(irr - ref) >= 1.0:
+            row[f"comparison_{metric}"] = comp_val
+            row[f"delta_{metric}"] = comp_val - ref
+            if pd.notna(ref) and pd.notna(comp_val):
+                if metric.startswith("T8") and abs(comp_val - ref) >= 1.0:
                     notable.append(metric)
-                if metric.startswith(("accz", "gyroy")) and abs(irr - ref) >= max(0.05, abs(ref) * 0.35):
+                if metric.startswith(("accz", "gyroy")) and abs(comp_val - ref) >= max(0.05, abs(ref) * 0.35):
                     notable.append(metric)
         row["notable_differences"] = ", ".join(notable)
         rows.append(row)
@@ -500,13 +503,13 @@ def zone_findings(duration: pd.DataFrame, mech_delta: pd.DataFrame, product_delt
             continue
         prod_zone = product_delta[(product_delta["zone"] == zone) & (product_delta["sensor"].isin(PRODUCT_SENSORS))]
         spread_zone = product_delta[(product_delta["zone"] == zone) & (product_delta["sensor"] == "PRODUCT_SPREAD")]
-        mean_prod_delta = prod_zone["mean_delta_irregular_minus_reference_C"].mean()
+        mean_prod_delta = prod_zone["mean_delta_comparison_minus_reference_C"].mean()
         max_abs_sensor = prod_zone.loc[
-            prod_zone["mean_delta_irregular_minus_reference_C"].abs().idxmax(), "sensor"
+            prod_zone["mean_delta_comparison_minus_reference_C"].abs().idxmax(), "sensor"
         ] if not prod_zone.empty else ""
-        max_abs_delta = prod_zone["mean_delta_irregular_minus_reference_C"].abs().max() if not prod_zone.empty else np.nan
+        max_abs_delta = prod_zone["mean_delta_comparison_minus_reference_C"].abs().max() if not prod_zone.empty else np.nan
         spread_delta = (
-            spread_zone["mean_delta_irregular_minus_reference_C"].iloc[0]
+            spread_zone["mean_delta_comparison_minus_reference_C"].iloc[0]
             if not spread_zone.empty
             else np.nan
         )
@@ -517,7 +520,7 @@ def zone_findings(duration: pd.DataFrame, mech_delta: pd.DataFrame, product_delt
                 "zone": zone,
                 "process_interpretation": descriptions[zone],
                 "reference_duration_s": duration_lookup.loc[zone, "reference_duration_s"],
-                "irregular_pattern_duration_s": duration_lookup.loc[zone, "irregular_pattern_duration_s"],
+                "comparison_pattern_duration_s": duration_lookup.loc[zone, "comparison_pattern_duration_s"],
                 "extra_duration_s": extra,
                 "duration_reading": (
                     "main stretched section"
@@ -533,9 +536,9 @@ def zone_findings(duration: pd.DataFrame, mech_delta: pd.DataFrame, product_delt
                 "largest_sensor_delta": f"{max_abs_sensor} ({max_abs_delta:.2f} C abs mean delta)" if max_abs_sensor else "",
                 "product_spread_delta_C": spread_delta,
                 "temperature_reading": (
-                    "irregular warmer than reference"
+                    "comparison warmer than reference"
                     if mean_prod_delta >= 0.5
-                    else "irregular cooler than reference"
+                    else "comparison cooler than reference"
                     if mean_prod_delta <= -0.5
                     else "similar mean product temperature"
                 ),
@@ -582,24 +585,24 @@ def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
 
-    irregular = read_run(IRREGULAR_CSV)
+    comparison = read_run(COMPARISON_CSV)
     reference = read_run(REFERENCE_CSV)
-    irregular_seconds = build_seconds(irregular)
+    comparison_seconds = build_seconds(comparison)
     reference_seconds = build_seconds(reference)
-    map_df, dtw_cost = dtw_map(irregular_seconds, reference_seconds)
-    detected_reference = detect_pattern_zones(reference_seconds, "reference_2291-4160")
-    detected_irregular = detect_pattern_zones(irregular_seconds, "irregular_119-2290s")
-    detected_zones = pd.concat([detected_reference, detected_irregular], ignore_index=True)
+    map_df, dtw_cost = dtw_map(comparison_seconds, reference_seconds)
+    detected_reference = detect_pattern_zones(reference_seconds, REFERENCE_RUN_NAME)
+    detected_comparison = detect_pattern_zones(comparison_seconds, COMPARISON_RUN_NAME)
+    detected_zones = pd.concat([detected_reference, detected_comparison], ignore_index=True)
 
-    irregular_temp = temp_with_zones(irregular, "irregular_119-2290s", map_df)
-    reference_temp = temp_with_zones(reference, "reference_2291-4160")
-    temp_all = pd.concat([reference_temp, irregular_temp], ignore_index=True)
-    detected_reference_temp = temp_with_detected_zones(reference, "reference_2291-4160", detected_reference)
-    detected_irregular_temp = temp_with_detected_zones(irregular, "irregular_119-2290s", detected_irregular)
-    detected_temp_all = pd.concat([detected_reference_temp, detected_irregular_temp], ignore_index=True)
+    comparison_temp = temp_with_zones(comparison, COMPARISON_RUN_NAME, map_df)
+    reference_temp = temp_with_zones(reference, REFERENCE_RUN_NAME)
+    temp_all = pd.concat([reference_temp, comparison_temp], ignore_index=True)
+    detected_reference_temp = temp_with_detected_zones(reference, REFERENCE_RUN_NAME, detected_reference)
+    detected_comparison_temp = temp_with_detected_zones(comparison, COMPARISON_RUN_NAME, detected_comparison)
+    detected_temp_all = pd.concat([detected_reference_temp, detected_comparison_temp], ignore_index=True)
 
     duration = duration_by_zone(reference_seconds, map_df)
-    mech_delta = mechanical_delta(reference_seconds, irregular_seconds, map_df)
+    mech_delta = mechanical_delta(reference_seconds, comparison_seconds, map_df)
     product_summary = product_zone_summary(temp_all)
     product_delta = product_zone_delta(product_summary)
     hotspots = hotspot_by_zone(temp_all)
@@ -610,9 +613,9 @@ def main() -> None:
 
     detected_duration = detected_zones.pivot_table(index="zone", columns="run", values="duration_s").reset_index()
     detected_duration.columns.name = None
-    if "irregular_119-2290s" in detected_duration.columns and "reference_2291-4160" in detected_duration.columns:
-        detected_duration["duration_delta_irregular_minus_reference_s"] = (
-            detected_duration["irregular_119-2290s"] - detected_duration["reference_2291-4160"]
+    if COMPARISON_RUN_NAME in detected_duration.columns and REFERENCE_RUN_NAME in detected_duration.columns:
+        detected_duration["duration_delta_comparison_minus_reference_s"] = (
+            detected_duration[COMPARISON_RUN_NAME] - detected_duration[REFERENCE_RUN_NAME]
         )
     order = {name: i for i, (_, _, name, _) in enumerate(ZONES)}
     detected_duration["order"] = detected_duration["zone"].map(order)
@@ -630,15 +633,16 @@ def main() -> None:
         ]
     )
 
-    extra_wall = (irregular["elapsed_s"].max() - reference["elapsed_s"].max())
+    extra_wall = (comparison["elapsed_s"].max() - reference["elapsed_s"].max())
     summary = pd.DataFrame(
         [
             ["reference_run", REFERENCE_CSV.name],
-            ["irregular_run", IRREGULAR_CSV.name],
+            ["comparison_run", COMPARISON_CSV.name],
+            ["comparison_label", COMPARISON_RUN_NAME],
             ["method", "Pattern-based DTW alignment using T8, acc z mean/std, gyro y mean/std per second"],
             ["new_in_this_version", "Adds experimental per-run pattern-derived zones and clearer product-hotspot figures."],
             ["extra_wall_time_s", extra_wall],
-            ["meaning_of_extra_wall_time", "Irregular run elapsed duration minus reference elapsed duration; not itself a stop window."],
+            ["meaning_of_extra_wall_time", "Comparison run elapsed duration minus reference elapsed duration; not itself a stop window."],
             ["dtw_cost", dtw_cost],
             ["largest_zone_extra_s", duration.loc[duration["extra_duration_s"].idxmax(), "zone"]],
             ["largest_zone_extra_duration_s", duration["extra_duration_s"].max()],
@@ -650,20 +654,20 @@ def main() -> None:
 
     readme = pd.DataFrame(
         [
-            ["rolling_window", "A moving local summary, e.g. median over nearby 30 seconds. Useful for smoothing but poor for distinguishing expected quiet zones from true irregular stops."],
-            ["extra_wall_time", "The irregular file lasts about 302 s longer than the reference. This is only the duration difference between files."],
+            ["rolling_window", "A moving local summary, e.g. median over nearby 30 seconds. Useful for smoothing but poor for distinguishing expected quiet zones from true process stops."],
+            ["extra_wall_time", "The comparison file duration minus the reference duration. This is only the duration difference between files."],
             ["low_motion_threshold", "The prior report took the 5th percentile of reference low-motion behavior as a cut-off. That can mislabel normal quiet zones as stops."],
-            ["pattern_alignment", "This report aligns the irregular run to the reference process pattern using T8, acc z, and gyro y features, then asks which zones absorbed extra time."],
-            ["zone_extra_duration", "For each reference process zone, this is irregular pattern duration minus reference duration after alignment."],
+            ["pattern_alignment", "This report aligns the comparison run to the reference process pattern using T8, acc z, and gyro y features, then asks which zones absorbed extra time."],
+            ["zone_extra_duration", "For each reference process zone, this is comparison pattern duration minus reference duration after alignment."],
             ["temperature_comparison", "Product temperatures are compared inside the aligned process zones, not only against absolute wall-clock time."],
-            ["product_hotspot_definition", "For the remade hotspot sheets, a product hotspot means a T2-T6 sensor is warmer than the T2-T6 average within the same detected zone."],
+            ["product_hotspot_definition", "For the remade hotspot sheets, a product hotspot means a product sensor (T2, T3, T4, T5, T7) is warmer than the product-sensor average within the same detected zone."],
             ["pattern_detected_zones", "Experimental per-run segmentation from T8 valleys, sustained gyro-y variability, acc-z variability, and late T8 rise. Early zones are lower confidence than vibration/cooling cycles."],
         ],
         columns=["term", "plain_language_explanation"],
     )
 
     path_sample = map_df.iloc[:: max(1, len(map_df) // 500)].copy()
-    path_sample["irregular_zone_assigned"] = path_sample["reference_zone"]
+    path_sample["comparison_zone_assigned"] = path_sample["reference_zone"]
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -795,11 +799,11 @@ def main() -> None:
     chart.width = 20
     ws.add_chart(chart, "G2")
 
-    chart_df = irregular_seconds[["elapsed_sec", "T8", "accz_mean", "gyroy_mean"]].iloc[::2].copy()
-    ws = wb.create_sheet("Irregular Pattern")
+    chart_df = comparison_seconds[["elapsed_sec", "T8", "accz_mean", "gyroy_mean"]].iloc[::2].copy()
+    ws = wb.create_sheet("Comparison Pattern")
     write_df(ws, chart_df)
     chart = LineChart()
-    chart.title = "Irregular Pattern: T8, acc z, gyro y"
+    chart.title = "Comparison Pattern: T8, acc z, gyro y"
     chart.y_axis.title = "scaled raw values"
     chart.x_axis.title = "elapsed s"
     data = Reference(ws, min_col=2, max_col=4, min_row=1, max_row=ws.max_row)

@@ -6,8 +6,10 @@ import numpy as np
 import pandas as pd
 
 from analyze_aasted_runs_zone_patterns import (
-    IRREGULAR_CSV,
+    COMPARISON_CSV,
+    COMPARISON_RUN_NAME,
     REFERENCE_CSV,
+    REFERENCE_RUN_NAME,
     OUTPUT_DIR,
     TEMP_SENSORS,
     build_seconds,
@@ -194,11 +196,11 @@ def make_figure(path: Path, run_name: str, csv_path: Path) -> Path:
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ref_path = OUTPUT_DIR / "reference_2291_4160_temperature_accz_zones.svg"
-    irr_path = OUTPUT_DIR / "irregular_119_2290_temperature_accz_zones.svg"
-    make_figure(ref_path, "reference_2291-4160", REFERENCE_CSV)
-    make_figure(irr_path, "irregular_119-2290s", IRREGULAR_CSV)
+    comparison_path = OUTPUT_DIR / "old_configuration_temperature_accz_zones.svg"
+    make_figure(ref_path, REFERENCE_RUN_NAME, REFERENCE_CSV)
+    make_figure(comparison_path, COMPARISON_RUN_NAME, COMPARISON_CSV)
     print(ref_path)
-    print(irr_path)
+    print(comparison_path)
 
 
 if __name__ == "__main__":

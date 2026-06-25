@@ -16,9 +16,12 @@ from analyze_aasted_runs_zone_patterns import (
     REFERENCE_RUN_NAME,
     OUTPUT_DIR,
     TEMP_SENSORS,
+    aasted_detachment_analysis,
     build_seconds,
     detect_pattern_zones,
+    load_parameter_landmarks,
     read_run,
+    run_lookup_name,
 )
 
 
@@ -119,6 +122,8 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
     df = read_run(csv_path)
     seconds = build_seconds(df)
     zones = detect_pattern_zones(seconds, run_name)
+    landmarks = load_parameter_landmarks()
+    detachment, _change_points, _landmarks = aasted_detachment_analysis({run_name: df}, zones)
 
     temp = df.dropna(subset=TEMP_SENSORS, how="all")[["time", "elapsed_s", *TEMP_SENSORS]].copy()
     temp = downsample(temp, 1800)
@@ -152,7 +157,7 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
     y_us_min = us_min - us_pad
     y_us_max = us_max + us_pad
 
-    width, height = 1680, 920
+    width, height = 1680, 1120
     left, right, top, bottom = 112, 168, 80, 190
     plot_w = width - left - right
     plot_h = 430
@@ -245,6 +250,39 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
         points = [(sx(float(t)), sy_us(float(v))) for t, v in zip(ultrasound["time"], ultrasound[channel]) if pd.notna(v)]
         draw_polyline(draw, points, COLORS[channel], width=4)
 
+    run_landmarks = landmarks[landmarks["run"].map(run_lookup_name).eq(run_name)] if not landmarks.empty and "run" in landmarks.columns else pd.DataFrame()
+    if not run_landmarks.empty:
+        seen = set()
+        event_specs = [
+            ("crystallization_onset_s", "cryst. onset", (124, 58, 237)),
+            ("detachment_onset_s", "detach. onset", (220, 38, 38)),
+        ]
+        for col, label, color in event_specs:
+            for value in pd.to_numeric(run_landmarks[col], errors="coerce").dropna().unique():
+                key = (col, round(float(value), 1))
+                if key in seen:
+                    continue
+                seen.add(key)
+                x = sx(x_min + float(value))
+                if left <= x <= left + plot_w:
+                    draw.line((x, top, x, top + plot_h), fill=color, width=3)
+                    draw.line((x, us_top, x, us_top + us_h), fill=color, width=3)
+                    draw.text((x + 4, top + 24 + len(seen) * 14), label, fill=color, font=font(11, True))
+
+    if not detachment.empty and "detachment_offset_s" in detachment.columns:
+        for _, row in detachment.iterrows():
+            channel = row.get("channel", "")
+            offset = pd.to_numeric(pd.Series([row.get("detachment_offset_s")]), errors="coerce").iloc[0]
+            status = str(row.get("detachment_offset_status", ""))
+            color = (22, 163, 74) if status == "complete_detachment_for_channel" else (245, 158, 11)
+            if pd.notna(offset):
+                x = sx(x_min + float(offset))
+                if left <= x <= left + plot_w:
+                    draw.line((x, us_top, x, us_top + us_h), fill=color, width=4)
+                    draw.text((x + 4, us_top + 18), f"{channel} complete", fill=color, font=font(10, True))
+            elif "partial" in status:
+                draw.text((left + 8, us_top + 18 + 16 * ULTRASOUND_PLOT_CHANNELS.index(channel) if channel in ULTRASOUND_PLOT_CHANNELS else us_top + 18), f"{channel}: partial/no complete offset", fill=color, font=font(10, True))
+
     lx, ly = left, height - 62
     for idx, item in enumerate(["T1 / RH", *TEMP_PLOT_SENSORS, "acc z", *ULTRASOUND_PLOT_CHANNELS]):
         x = lx + (idx % 12) * 118
@@ -258,7 +296,7 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
     for i, row in enumerate(zones.itertuples(index=False)):
         label = str(row.zone).replace("_", " ")
         abs_start = x_min + float(row.detected_start_s)
-        if i < 9:
+        if i < 14:
             draw.text((table_x, table_y + 18 + i * 13), f"{abs_start:.0f}: {label}", fill=(51, 65, 85), font=font(10))
 
     img.save(out_path)
@@ -290,14 +328,14 @@ def embed_figures() -> Path:
     write_note(ref_ws, "Reference run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
     ref_img = XLImage(str(ref_png))
     ref_img.width = 1120
-    ref_img.height = 613
+    ref_img.height = 747
     ref_ws.add_image(ref_img, "A3")
 
     comp_ws = wb.create_sheet("Figure Old Configuration", 1)
     write_note(comp_ws, "Old-configuration comparison run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
     comp_img = XLImage(str(comparison_png))
     comp_img.width = 1120
-    comp_img.height = 613
+    comp_img.height = 747
     comp_ws.add_image(comp_img, "A3")
 
     wb.save(OUTPUT_WORKBOOK)

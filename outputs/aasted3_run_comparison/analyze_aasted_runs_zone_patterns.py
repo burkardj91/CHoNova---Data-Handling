@@ -18,6 +18,8 @@ IRREGULAR_CSV = COMPARISON_CSV  # Backward-compatible import name for helper scr
 REFERENCE_CSV = WORKSPACE / "inputs" / "aasted3" / "reference_2291_4160.csv"
 REFERENCE_RUN_NAME = "reference_2291-4160"
 COMPARISON_RUN_NAME = "old-configuration"
+PARAMETER_SUMMARY_PATTERNS = ["*parameter_summary*.xlsx", "*parameter_summary*.csv"]
+US_CHANNELS = ["Rx1Tx1", "Rx2Tx2"]
 
 # Product temperature sensors. User correction listed "T2, T4, T4, T5, T7";
 # treat the duplicated T4 as T3 to keep five unique product locations.
@@ -59,7 +61,9 @@ ZONES = [
     (898, 1032, "cooling_4", "Fourth periodic cooling section."),
     (1032, 1638, "less_periodic_cooling_2", "Less periodic cooling section."),
     (1638, 1786, "transition_2", "Transition period before demoulding."),
-    (1786, 99999, "demoulding", "Demoulding zone / run end."),
+    (1786, 1802, "demoulding_twisting", "First demoulding subphase: acc z shifts from high plateau to low plateau while acc x shows a negative parabolic movement."),
+    (1802, 1850, "demoulding_vibration", "Second demoulding subphase: vibration/shaking visible in acc z, acc x/y, and gyro y."),
+    (1850, 99999, "final_demoulding", "Final demoulding/run-out after twisting and vibration."),
 ]
 
 
@@ -210,6 +214,61 @@ def detect_pattern_zones(seconds: pd.DataFrame, run_name: str) -> pd.DataFrame:
         demoulding_start = int(late_rise["elapsed_sec"].iloc[0]) if not late_rise.empty else int(seconds["elapsed_sec"].max() - 90)
     run_end = int(seconds["elapsed_sec"].max())
 
+    demould_search = seconds[
+        (seconds["elapsed_sec"] >= demoulding_start)
+        & (seconds["elapsed_sec"] <= min(run_end, demoulding_start + 120))
+    ].copy()
+    pre_demould = seconds[
+        (seconds["elapsed_sec"] >= max(0, demoulding_start - 45))
+        & (seconds["elapsed_sec"] < demoulding_start)
+    ].copy()
+    pre_accx = float(pre_demould["accx_mean"].median()) if "accx_mean" in pre_demould and not pre_demould.empty else 0.0
+    pre_accz = float(pre_demould["accz_mean"].median()) if "accz_mean" in pre_demould and not pre_demould.empty else baseline
+    if not demould_search.empty:
+        demould_search["accx_med"] = demould_search["accx_mean"].rolling(5, center=True, min_periods=2).median()
+        demould_search["accz_med"] = demould_search["accz_mean"].rolling(5, center=True, min_periods=2).median()
+        demould_search["motion_std"] = (
+            demould_search[["accx_std", "accy_std", "accz_std", "gyroy_std"]]
+            .fillna(0)
+            .abs()
+            .sum(axis=1)
+        )
+        low_accz = demould_search["accz_med"] < (pre_accz - 0.8)
+        accx_returned = (demould_search["accx_med"] - pre_accx).abs() < 0.18
+        twist_hits = demould_search[
+            (demould_search["elapsed_sec"] >= demoulding_start + 6)
+            & low_accz
+            & accx_returned
+        ]
+        if not twist_hits.empty:
+            twisting_end = int(twist_hits["elapsed_sec"].iloc[0])
+        else:
+            twisting_end = min(run_end, demoulding_start + 16)
+
+        vib_candidate = demould_search[demould_search["elapsed_sec"] >= twisting_end].copy()
+        vib_baseline = float(pre_demould[["accx_std", "accy_std", "accz_std"]].sum(axis=1).median()) if not pre_demould.empty else 0.10
+        vib_mask = (
+            (vib_candidate["accz_std_roll"] > max(0.15, float(seconds["accz_std_roll"].quantile(0.80))))
+            | (vib_candidate["motion_std"] > max(0.45, vib_baseline * 4.0))
+            | (vib_candidate["gyroy_std"] > 2.0)
+        )
+        vib_segments = _segments_from_mask(vib_candidate["elapsed_sec"], vib_mask, min_len=5)
+        vib_segments = [seg for seg in vib_segments if seg[0] <= twisting_end + 55]
+        if vib_segments:
+            vibration_start = twisting_end
+            vibration_end = min(run_end, vib_segments[-1][1] + 1)
+        else:
+            vibration_start = twisting_end
+            vibration_end = min(run_end, twisting_end + 48)
+    else:
+        twisting_end = min(run_end, demoulding_start + 16)
+        vibration_start = twisting_end
+        vibration_end = min(run_end, twisting_end + 48)
+
+    twisting_end = max(demoulding_start, min(int(twisting_end), run_end))
+    vibration_start = max(twisting_end, min(int(vibration_start), run_end))
+    vibration_end = max(vibration_start, min(int(vibration_end), run_end))
+
     boundaries = [
         (0, movement_end, "movement_to_conditioning", "first warm-up/IMU-change landmark", "medium" if movement_end_options else "low"),
         (movement_end, deposition_transfer_start, "mould_conditioning", "T8 high/conditioning phase before deposition event", "medium"),
@@ -222,7 +281,9 @@ def detect_pattern_zones(seconds: pd.DataFrame, run_name: str) -> pd.DataFrame:
         (c4, less_periodic_start, "cooling_4", "T8 valley-to-valley cooling cycle", "high"),
         (less_periodic_start, transition2_start, "less_periodic_cooling_2", "after periodic valleys until the last cold T8 minimum", "medium"),
         (transition2_start, demoulding_start, "transition_2", "last cold T8 minimum until sharp acc-z regime change", "medium"),
-        (demoulding_start, run_end, "demoulding", "after sharp acc-z regime change", "medium"),
+        (demoulding_start, twisting_end, "demoulding_twisting", "acc-z plateau drop with acc-x negative parabolic movement", "medium"),
+        (vibration_start, vibration_end, "demoulding_vibration", "high IMU variability during demoulding vibration/shaking", "medium"),
+        (vibration_end, run_end, "final_demoulding", "after twisting/vibration subphases", "medium"),
     ]
 
     rows = []
@@ -473,6 +534,7 @@ def clearer_hotspots(temp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd
         zone_mean = means.mean()
         hottest = means.idxmax()
         coolest = means.idxmin()
+        spread = means[hottest] - means[coolest]
         rows.append(
             {
                 "run": run,
@@ -482,13 +544,19 @@ def clearer_hotspots(temp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd
                 "hottest_mean_C": means[hottest],
                 "coolest_sensor": coolest,
                 "coolest_mean_C": means[coolest],
-                "spread_hottest_minus_coolest_C": means[hottest] - means[coolest],
+                "spread_hottest_minus_coolest_C": spread,
+                "spread_severity": "high" if spread >= 1.5 else "moderate" if spread >= 0.75 else "low",
+                "spread_color": "#F8696B" if spread >= 1.5 else "#FFEB84" if spread >= 0.75 else "#63BE7B",
                 "plain_language": f"{hottest} is warmest and {coolest} is coolest in this zone.",
             }
         )
         for sensor in PRODUCT_SENSORS:
+            sensor_delta = means[sensor] - zone_mean
+            sensor_class = "hotspot" if sensor_delta >= 0.5 else "coolspot" if sensor_delta <= -0.5 else "neutral"
             rows[-1][f"{sensor}_mean_C"] = means[sensor]
-            rows[-1][f"{sensor}_vs_zone_mean_C"] = means[sensor] - zone_mean
+            rows[-1][f"{sensor}_vs_zone_mean_C"] = sensor_delta
+            rows[-1][f"{sensor}_thermal_class"] = sensor_class
+            rows[-1][f"{sensor}_color"] = "#F8696B" if sensor_class == "hotspot" else "#4472C4" if sensor_class == "coolspot" else "#FFFFFF"
             matrix_rows.append(
                 {
                     "run": run,
@@ -497,7 +565,9 @@ def clearer_hotspots(temp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd
                     "x_mm": COORDS[sensor][0],
                     "y_mm": COORDS[sensor][1],
                     "mean_C": means[sensor],
-                    "delta_vs_zone_product_mean_C": means[sensor] - zone_mean,
+                    "delta_vs_zone_product_mean_C": sensor_delta,
+                    "thermal_class": sensor_class,
+                    "color_code": "#F8696B" if sensor_class == "hotspot" else "#4472C4" if sensor_class == "coolspot" else "#FFFFFF",
                 }
             )
     hotspot_summary = pd.DataFrame(rows)
@@ -507,6 +577,265 @@ def clearer_hotspots(temp: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd
     ).reset_index()
     delta_matrix.columns.name = None
     return hotspot_summary, hotspot_long, delta_matrix
+
+
+def change_scores(t: np.ndarray, y: np.ndarray, window_points: int) -> np.ndarray:
+    scores = np.full(len(y), np.nan)
+    for i in range(window_points, len(y) - window_points):
+        left = y[i - window_points : i]
+        right = y[i : i + window_points]
+        denom = np.nanstd(np.r_[left, right])
+        if not np.isfinite(denom) or denom <= 1e-9:
+            denom = 1e-9
+        scores[i] = (np.nanmean(right) - np.nanmean(left)) / denom
+    return scores
+
+
+def detect_us_change_points(seg: pd.DataFrame, channel: str) -> list[dict[str, float]]:
+    valid = seg[["elapsed_s", channel]].dropna().sort_values("elapsed_s")
+    if len(valid) < 12:
+        return []
+    t = valid["elapsed_s"].to_numpy(float)
+    y = valid[channel].rolling(5, center=True, min_periods=2).median().to_numpy(float)
+    dt = np.nanmedian(np.diff(t))
+    window_points = max(4, int(round(45.0 / max(dt, 1.0))))
+    scores = change_scores(t, y, window_points)
+    positive = scores[np.isfinite(scores) & (scores > 0)]
+    threshold = np.nanpercentile(positive, 80) if len(positive) else np.inf
+    candidates = []
+    for idx in np.argsort(np.nan_to_num(scores, nan=-np.inf))[::-1]:
+        if not np.isfinite(scores[idx]) or scores[idx] <= 0 or scores[idx] < max(0.8, threshold):
+            continue
+        tt = float(t[idx])
+        if any(abs(tt - c["change_point_s"]) < 60.0 for c in candidates):
+            continue
+        before = float(np.nanmedian(y[max(0, idx - window_points) : idx]))
+        after = float(np.nanmedian(y[idx : min(len(y), idx + window_points)]))
+        delta = after - before
+        if delta < 0.025:
+            continue
+        candidates.append(
+            {
+                "change_point_s": tt,
+                "change_score": float(scores[idx]),
+                "local_before_median": before,
+                "local_after_median": after,
+                "local_delta_after_minus_before": delta,
+            }
+        )
+        if len(candidates) >= 30:
+            break
+    return sorted(candidates, key=lambda c: c["change_point_s"])
+
+
+def median_window(df: pd.DataFrame, channel: str, start: float, end: float) -> float:
+    w = df[(df["elapsed_s"] >= start) & (df["elapsed_s"] <= end)][channel].dropna()
+    if w.empty:
+        idx = (df["elapsed_s"] - end).abs().idxmin()
+        return float(df.loc[idx, channel])
+    return float(w.median())
+
+
+def us_level_near(seg: pd.DataFrame, channel: str, t0: float, width: float = 5.0) -> float:
+    w = seg[(seg["elapsed_s"] >= t0) & (seg["elapsed_s"] <= t0 + width)][channel].dropna()
+    return np.nan if w.empty else float(w.median())
+
+
+def find_parameter_summary_file() -> Path | None:
+    input_dir = WORKSPACE / "inputs" / "aasted3"
+    for pattern in PARAMETER_SUMMARY_PATTERNS:
+        hits = sorted(input_dir.glob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
+def _normalized_columns(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out.columns = [
+        str(c).strip().lower().replace(" ", "_").replace("-", "_").replace("(", "").replace(")", "")
+        for c in out.columns
+    ]
+    return out
+
+
+def _first_existing(row: pd.Series, candidates: list[str]) -> object:
+    for col in candidates:
+        if col in row and pd.notna(row[col]):
+            return row[col]
+    return np.nan
+
+
+def load_parameter_landmarks() -> pd.DataFrame:
+    path = find_parameter_summary_file()
+    if path is None:
+        return pd.DataFrame(
+            columns=[
+                "run",
+                "deposition_s",
+                "crystallization_onset_s",
+                "detachment_onset_s",
+                "channel",
+                "source_file",
+                "input_status",
+            ]
+        )
+    if path.suffix.lower() == ".csv":
+        raw = pd.read_csv(path)
+    else:
+        raw = pd.concat(pd.read_excel(path, sheet_name=None).values(), ignore_index=True)
+    raw = _normalized_columns(raw).dropna(how="all")
+    rows = []
+    for _, row in raw.iterrows():
+        run = _first_existing(row, ["run", "run_name", "sample", "sample_id", "file", "filename", "comparison_label"])
+        deposition = _first_existing(row, ["deposition_s", "deposition", "deposition_time_s", "deposition_absolute_s"])
+        crystallization = _first_existing(
+            row,
+            [
+                "crystallization_onset_s",
+                "cryst_onset_s",
+                "cryst._onset_s",
+                "crystallization_start_s",
+                "crystallization_onset_absolute_s",
+            ],
+        )
+        detachment = _first_existing(
+            row,
+            [
+                "detachment_onset_s",
+                "detachment_onset_absolute_s",
+                "detachment_start_s",
+                "detachment_onset",
+            ],
+        )
+        channel = _first_existing(row, ["channel", "us_channel", "sensor_channel"])
+        if pd.isna(run) or pd.isna(detachment) or pd.isna(deposition):
+            continue
+        channels = [str(channel)] if pd.notna(channel) and str(channel) in US_CHANNELS else US_CHANNELS
+        for ch in channels:
+            rows.append(
+                {
+                    "run": str(run),
+                    "deposition_s": float(deposition),
+                    "crystallization_onset_s": float(crystallization) if pd.notna(crystallization) else np.nan,
+                    "detachment_onset_s": float(detachment),
+                    "channel": ch,
+                    "source_file": path.name,
+                    "input_status": "loaded",
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def run_lookup_name(name: str) -> str:
+    text = str(name).lower()
+    if "ref" in text or "2291" in text:
+        return REFERENCE_RUN_NAME
+    if "old" in text or "configuration" in text or "split" in text:
+        return COMPARISON_RUN_NAME
+    return str(name)
+
+
+def aasted_detachment_analysis(
+    runs: dict[str, pd.DataFrame],
+    detected_zones: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    landmarks = load_parameter_landmarks()
+    if landmarks.empty:
+        note = pd.DataFrame(
+            [
+                {
+                    "status": "waiting_for_parameter_summary",
+                    "expected_location": str(WORKSPACE / "inputs" / "aasted3"),
+                    "expected_filename": "any file containing parameter_summary in the name",
+                    "required_columns": "run/sample/file, deposition_s, detachment_onset_s; optional crystallization_onset_s and channel",
+                    "method": "Once present, positive upward ultrasound change points are tested against the pre-deposition reference minus 10%.",
+                }
+            ]
+        )
+        return note, pd.DataFrame(), landmarks
+
+    cp_rows = []
+    summary_rows = []
+    for _, landmark in landmarks.iterrows():
+        run_name = run_lookup_name(landmark["run"])
+        if run_name not in runs:
+            continue
+        df = runs[run_name]
+        channel = landmark["channel"]
+        if channel not in df.columns:
+            continue
+        z = detected_zones[(detected_zones["run"] == run_name) & (detected_zones["zone"] == "final_demoulding")]
+        window_end = float(z.iloc[0]["detected_start_s"]) if not z.empty else float(df["elapsed_s"].max())
+        onset = float(landmark["detachment_onset_s"])
+        seg = df[(df["elapsed_s"] >= onset) & (df["elapsed_s"] <= window_end)].copy()
+        if seg.empty:
+            continue
+        reference = median_window(df, channel, float(landmark["deposition_s"]) - 5.0, float(landmark["deposition_s"]))
+        threshold = reference - 0.10 * abs(reference)
+        cps = detect_us_change_points(seg, channel)
+        selected = None
+        count_until = 0
+        for idx, cp in enumerate(cps, 1):
+            level = us_level_near(seg, channel, cp["change_point_s"], 5.0)
+            met = bool(pd.notna(level) and level >= threshold)
+            if selected is None:
+                count_until = idx
+            cp_rows.append(
+                {
+                    "run": run_name,
+                    "channel": channel,
+                    "change_point_index": idx,
+                    **cp,
+                    "deposition_reference_window_s": f"{float(landmark['deposition_s']) - 5.0:.1f}-{float(landmark['deposition_s']):.1f}",
+                    "reference_us_level": reference,
+                    "threshold_10pct_lower": threshold,
+                    "us_level_at_change_point": level,
+                    "threshold_met": met,
+                    "note": "first passing change point used as detachment offset" if met and selected is None else ("later passing change point" if met else ""),
+                }
+            )
+            if met and selected is None:
+                selected = {**cp, "level": level, "idx": idx}
+        if selected is not None:
+            offset = selected["change_point_s"]
+            status = "complete_detachment_for_channel"
+            selected_level = selected["level"]
+            count_until = selected["idx"]
+        elif cps:
+            offset = np.nan
+            status = "partial_detachment_no_change_point_met_threshold"
+            selected_level = us_level_near(seg, channel, cps[-1]["change_point_s"], 5.0)
+            count_until = len(cps)
+        else:
+            offset = np.nan
+            status = "no_positive_change_point_detected"
+            selected_level = np.nan
+            count_until = 0
+        summary_rows.append(
+            {
+                "run": run_name,
+                "channel": channel,
+                "deposition_s": float(landmark["deposition_s"]),
+                "crystallization_onset_s": landmark["crystallization_onset_s"],
+                "detachment_onset_s": onset,
+                "analysis_window_end_s": window_end,
+                "detachment_offset_s": offset,
+                "detachment_offset_status": status,
+                "reference_us_level": reference,
+                "threshold_10pct_lower": threshold,
+                "us_level_at_decision": selected_level,
+                "change_points_detected_total": len(cps),
+                "change_points_until_detachment_or_last": count_until,
+                "pattern_description": (
+                    f"{len(cps)} positive upward change point(s) from detachment onset to the start of final demoulding. "
+                    f"{'First complete offset at ' + f'{offset:.1f}s' if pd.notna(offset) else 'No change point reached the pre-deposition -10% threshold'}."
+                ),
+                "method": "positive/upward local mean-shift change points; complete detachment if US at change point >= 10%-below-pre-deposition-reference threshold",
+                "source_file": landmark["source_file"],
+            }
+        )
+    return pd.DataFrame(summary_rows), pd.DataFrame(cp_rows), landmarks
 
 
 def zone_findings(duration: pd.DataFrame, mech_delta: pd.DataFrame, product_delta: pd.DataFrame) -> pd.DataFrame:
@@ -609,6 +938,10 @@ def main() -> None:
     detected_reference = detect_pattern_zones(reference_seconds, REFERENCE_RUN_NAME)
     detected_comparison = detect_pattern_zones(comparison_seconds, COMPARISON_RUN_NAME)
     detected_zones = pd.concat([detected_reference, detected_comparison], ignore_index=True)
+    detachment_summary, detachment_change_points, parameter_landmarks = aasted_detachment_analysis(
+        {REFERENCE_RUN_NAME: reference, COMPARISON_RUN_NAME: comparison},
+        detected_zones,
+    )
 
     comparison_temp = temp_with_zones(comparison, COMPARISON_RUN_NAME, map_df)
     reference_temp = temp_with_zones(reference, REFERENCE_RUN_NAME)
@@ -657,6 +990,7 @@ def main() -> None:
             ["comparison_label", COMPARISON_RUN_NAME],
             ["method", "Pattern-based DTW alignment using T8, acc z mean/std, gyro y mean/std per second"],
             ["new_in_this_version", "Adds experimental per-run pattern-derived zones and clearer product-hotspot figures."],
+            ["aasted_detachment_architecture", "Optional. Add a parameter_summary file under inputs/aasted3 with deposition_s, detachment_onset_s, and optional crystallization_onset_s to populate ultrasound detachment offsets."],
             ["extra_wall_time_s", extra_wall],
             ["meaning_of_extra_wall_time", "Comparison run elapsed duration minus reference elapsed duration; not itself a stop window."],
             ["dtw_cost", dtw_cost],
@@ -678,6 +1012,8 @@ def main() -> None:
             ["temperature_comparison", "Product temperatures are compared inside the aligned process zones, not only against absolute wall-clock time."],
             ["product_hotspot_definition", "For the remade hotspot sheets, a product hotspot means a product sensor (T2, T3, T4, T5, T7) is warmer than the product-sensor average within the same detected zone."],
             ["pattern_detected_zones", "Experimental per-run segmentation from T8 valleys, sustained gyro-y variability, acc-z variability, and late T8 rise. Early zones are lower confidence than vibration/cooling cycles."],
+            ["demoulding_subphases", "The former broad demoulding zone is split into demoulding_twisting, demoulding_vibration, and final_demoulding from acc-z/acc-x/gyro-y patterns."],
+            ["aasted_detachment_offset", "If parameter_summary is available, ultrasound detachment offset uses positive/upward change points and a pre-deposition reference minus 10% threshold, analogous to the lab-trial logic."],
         ],
         columns=["term", "plain_language_explanation"],
     )
@@ -702,6 +1038,9 @@ def main() -> None:
         "Hotspot Summary": hotspot_summary,
         "Hotspot Sensor Data": hotspot_long,
         "Hotspot Delta Matrix": hotspot_delta_matrix,
+        "Aasted Detachment Summary": detachment_summary,
+        "Aasted US Change Points": detachment_change_points,
+        "Aasted Parameter Landmarks": parameter_landmarks,
         "Detected Product By Zone": detected_product_summary,
         "Detected Product Delta": detected_product_delta,
         "Alignment Path Sample": path_sample,
@@ -779,10 +1118,15 @@ def main() -> None:
     ws = wb["Hotspot Summary"]
     if ws.max_row > 1:
         spread_col = None
+        spread_color_col = None
+        sensor_color_cols = []
         for cell in ws[1]:
             if cell.value == "spread_hottest_minus_coolest_C":
                 spread_col = cell.column
-                break
+            if cell.value == "spread_color":
+                spread_color_col = cell.column
+            if isinstance(cell.value, str) and cell.value.endswith("_color"):
+                sensor_color_cols.append(cell.column)
         if spread_col:
             col = get_column_letter(spread_col)
             ws.conditional_formatting.add(
@@ -798,6 +1142,18 @@ def main() -> None:
             chart.height = 8
             chart.width = 18
             ws.add_chart(chart, "U2")
+        for row in range(2, ws.max_row + 1):
+            if spread_color_col:
+                color = str(ws.cell(row, spread_color_col).value or "").replace("#", "")
+                if len(color) == 6:
+                    for col_idx in ["spread_severity", "spread_color"]:
+                        header_lookup = {c.value: c.column for c in ws[1]}
+                        if col_idx in header_lookup:
+                            ws.cell(row, header_lookup[col_idx]).fill = PatternFill("solid", fgColor=color)
+            for col in sensor_color_cols:
+                color = str(ws.cell(row, col).value or "").replace("#", "")
+                if len(color) == 6 and color != "FFFFFF":
+                    ws.cell(row, col).fill = PatternFill("solid", fgColor=color)
 
     # Add compact trajectory sheet for charting the alignment.
     chart_df = reference_seconds[["elapsed_sec", "T8", "accz_mean", "gyroy_mean", "zone_reference"]].iloc[::2].copy()

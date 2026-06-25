@@ -233,6 +233,11 @@ def add_contour_sheets() -> Path:
     zone_scales = {}
     for zone, group in means.groupby("zone"):
         zone_scales[zone] = scale_for_values(group[PRODUCT_CONTOUR_SENSORS].to_numpy(dtype=float).ravel())
+    contour_dir = OUTPUT_DIR / "contour_images"
+    contour_dir.mkdir(parents=True, exist_ok=True)
+    for prefix in [REFERENCE_RUN_NAME, COMPARISON_RUN_NAME, "irregular_119-2290s"]:
+        for old_image in contour_dir.glob(f"{prefix}_*.png"):
+            old_image.unlink()
     workbook = load_workbook(SOURCE_WORKBOOK)
     for sheet_name in ["Contour Reference", "Contour Irregular", "Contour Old Configuration", "Contour Data", "Sensor Coordinates"]:
         if sheet_name in workbook.sheetnames:
@@ -259,7 +264,7 @@ def add_contour_sheets() -> Path:
         ws.column_dimensions["A"].width = 18
         run_means = means[means["run"] == run_name].reset_index(drop=True)
         for idx, row in run_means.iterrows():
-            image_path = OUTPUT_DIR / "contour_images" / f"{run_name}_{idx+1:02d}_{row['zone']}.png"
+            image_path = contour_dir / f"{run_name}_{idx+1:02d}_{row['zone']}.png"
             values = {sensor: row[sensor] for sensor in TEMP_SENSORS}
             title = f"{row['zone']} ({row['detected_start_s']:.0f}-{row['detected_end_s']:.0f}s)"
             vmin, vmax = zone_scales[row["zone"]]

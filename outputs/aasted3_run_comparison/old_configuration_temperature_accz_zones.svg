@@ -22,8 +22,9 @@
 <rect x="999.8" y="74" width="503.4" height="636" fill="#F5F3FF" opacity="0.92"/>
 <text transform="translate(1251.5,92) rotate(-28)" text-anchor="middle" font-family="Arial" font-size="12" fill="#334155">less periodic cooling 2</text>
 <rect x="1503.2" y="74" width="27.0" height="636" fill="#FAFAFA" opacity="0.92"/>
-<rect x="1530.2" y="74" width="45.8" height="636" fill="#F1F5F9" opacity="0.92"/>
-<text transform="translate(1553.1,92) rotate(-28)" text-anchor="middle" font-family="Arial" font-size="12" fill="#334155">demoulding</text>
+<rect x="1530.2" y="74" width="4.8" height="636" fill="#F1F5F9" opacity="0.92"/>
+<rect x="1535.0" y="74" width="38.7" height="636" fill="#EFF6FF" opacity="0.92"/>
+<rect x="1573.8" y="74" width="2.2" height="636" fill="#F0FDF4" opacity="0.92"/>
 <line x1="96" x2="1576" y1="736.3" y2="736.3" stroke="#E2E8F0" stroke-width="1"/>
 <text x="86" y="740.3" text-anchor="end" font-family="Arial" font-size="12" fill="#334155">-20</text>
 <line x1="96" x2="1576" y1="655.8" y2="655.8" stroke="#E2E8F0" stroke-width="1"/>
@@ -113,5 +114,5 @@
 <text x="1146" y="888" font-family="Arial" font-size="11" fill="#334155">1153: cooling 4</text>
 <text x="1146" y="902" font-family="Arial" font-size="11" fill="#334155">1308: less periodic cooling 2</text>
 <text x="1146" y="916" font-family="Arial" font-size="11" fill="#334155">2036: transition 2</text>
-<text x="1146" y="930" font-family="Arial" font-size="11" fill="#334155">2075: demoulding</text>
+<text x="1146" y="930" font-family="Arial" font-size="11" fill="#334155">2075: demoulding twisting</text>
 </svg>

@@ -42,6 +42,24 @@ def write_df(ws, df: pd.DataFrame, header_color: str = "1F4E78") -> None:
         ws.column_dimensions[get_column_letter(idx)].width = min(max(len(s) for s in samples) + 2, 38)
 
 
+def apply_hotspot_color_fills(ws) -> None:
+    if ws.max_row <= 1:
+        return
+    headers = {cell.value: cell.column for cell in ws[1]}
+    color_cols = [col for name, col in headers.items() if isinstance(name, str) and name.endswith("_color")]
+    for row in range(2, ws.max_row + 1):
+        for col in color_cols:
+            color = str(ws.cell(row, col).value or "").replace("#", "")
+            if len(color) == 6:
+                ws.cell(row, col).fill = PatternFill("solid", fgColor=color)
+        spread_color_col = headers.get("spread_color")
+        spread_severity_col = headers.get("spread_severity")
+        if spread_color_col and spread_severity_col:
+            color = str(ws.cell(row, spread_color_col).value or "").replace("#", "")
+            if len(color) == 6:
+                ws.cell(row, spread_severity_col).fill = PatternFill("solid", fgColor=color)
+
+
 def add_note(ws, row: int, title: str, text: str) -> int:
     ws.cell(row, 1, title)
     ws.cell(row, 2, text)
@@ -80,7 +98,15 @@ def make_readme() -> pd.DataFrame:
             },
             {
                 "topic": "Repeatability mode",
-                "explanation": "A separate repeatability analysis can be added when multiple repetitions are uploaded. That mode should compare runs within a setup, quantify CV/spread, inspect detachment patterns, and use an optional xxx_summary input for landmarks and metadata.",
+                "explanation": "A separate repeatability analysis can be added when multiple repetitions are uploaded. That mode should compare runs within a setup, quantify CV/spread, inspect detachment patterns, and use an optional xxx_summary or parameter_summary input for landmarks and metadata.",
+            },
+            {
+                "topic": "Aasted detachment offset",
+                "explanation": "Optional architecture is installed. When a parameter_summary file is placed in inputs/aasted3, the report can mark crystallization onset, detachment onset, and complete/partial ultrasound detachment offsets using positive change points and a pre-deposition reference minus 10% threshold.",
+            },
+            {
+                "topic": "Demoulding subclasses",
+                "explanation": "The former broad demoulding zone is split into demoulding_twisting, demoulding_vibration, and final_demoulding. Twisting is identified from the acc-z plateau drop with the acc-x negative-parabola movement; vibration uses elevated IMU variability.",
             },
             {
                 "topic": "Mechanical outlier roadmap",
@@ -88,7 +114,7 @@ def make_readme() -> pd.DataFrame:
             },
             {
                 "topic": "Prompt keywords to provide",
-                "explanation": "Please specify: analysis_mode = reference_based_comparison or repeatability_analysis; line_profile = Aasted-3; reference_run; comparison labels; conveyor_belt_speed; raw_data files; optional xxx_summary file; and desired customer/report detail level.",
+                "explanation": "Please specify: analysis_mode = reference_based_comparison or repeatability_analysis; line_profile = Aasted-3; reference_run; comparison labels; conveyor_belt_speed; raw_data files; optional parameter_summary/xxx_summary file; detachment_threshold_percent if not 10%; and desired customer/report detail level.",
             },
         ]
     )
@@ -184,6 +210,8 @@ def build_summary_workbook() -> None:
     for sheet_name in ["Sensor Coordinates", "Mechanical By Zone", "Hotspot Summary"]:
         ws = wb.create_sheet(sheet_name)
         write_df(ws, read_sheet(sheet_name))
+        if sheet_name == "Hotspot Summary":
+            apply_hotspot_color_fills(ws)
         if sheet_name == "Mechanical By Zone":
             for header in ws[1]:
                 if isinstance(header.value, str) and header.value.startswith("delta_"):
@@ -204,14 +232,14 @@ def build_summary_workbook() -> None:
         ws.cell(row, 1).font = Font(bold=True, color="1F4E78")
         row += 1
         images = sorted((OUTPUT_DIR / "contour_images").glob(f"{prefix}_*.png"))
-        for idx, path in enumerate(images[:12]):
+        for idx, path in enumerate(images):
             img = XLImage(str(path))
             img.width = 312
             img.height = 156
             col = "A" if idx % 3 == 0 else "G" if idx % 3 == 1 else "M"
             anchor_row = row + (idx // 3) * 9
             ws.add_image(img, f"{col}{anchor_row}")
-        row += 39
+        row += max(9, ((len(images) + 2) // 3) * 9) + 3
     append_table(ws, read_sheet("Hotspot Delta Matrix"), row, "Hotspot Delta Matrix")
 
     wb.save(SUMMARY_WORKBOOK)
@@ -240,6 +268,9 @@ def export_detail_workbooks() -> None:
         "Detected Product By Zone",
         "Detected Product Delta",
         "Hotspot Sensor Data",
+        "Aasted Detachment Summary",
+        "Aasted US Change Points",
+        "Aasted Parameter Landmarks",
         "Alignment Path Sample",
         "Reference Pattern",
         "Comparison Pattern",

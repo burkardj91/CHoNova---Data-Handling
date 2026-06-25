@@ -15,7 +15,7 @@ WORKSPACE = Path(r"C:\Users\BurkardJohannes\Documents\CHoNova _ Data Understandi
 OUTPUT_DIR = WORKSPACE / "outputs" / "aasted3_run_comparison"
 COMPARISON_CSV = WORKSPACE / "inputs" / "aasted3" / "old_configuration.csv"
 IRREGULAR_CSV = COMPARISON_CSV  # Backward-compatible import name for helper scripts.
-REFERENCE_CSV = Path(r"C:\Users\BurkardJohannes\Desktop\Temp Files\Aasted 3\260604_aasted3_2291-4160.csv")
+REFERENCE_CSV = WORKSPACE / "inputs" / "aasted3" / "reference_2291_4160.csv"
 REFERENCE_RUN_NAME = "reference_2291-4160"
 COMPARISON_RUN_NAME = "old-configuration"
 
@@ -24,6 +24,17 @@ COMPARISON_RUN_NAME = "old-configuration"
 PRODUCT_SENSORS = ["T2", "T3", "T4", "T5", "T7"]
 TEMP_SENSORS = [f"T{i}" for i in range(1, 10)]
 FEATURES = ["T8", "accz_mean", "accz_std", "gyroy_mean", "gyroy_std"]
+IMU_SENSOR_PREFIXES = {
+    "acc x": "accx",
+    "acc y": "accy",
+    "acc z": "accz",
+    "gyro x": "gyrox",
+    "gyro y": "gyroy",
+    "gyro z": "gyroz",
+    "mag x": "magx",
+    "mag y": "magy",
+    "mag z": "magz",
+}
 COORDS = {
     "T1": (53.0, 23.0),
     "T2": (70.0, 13.0),
@@ -69,26 +80,22 @@ def build_seconds(df: pd.DataFrame) -> pd.DataFrame:
     max_sec = int(np.ceil(df["elapsed_s"].max()))
     seconds = pd.DataFrame({"elapsed_sec": np.arange(0, max_sec + 1)})
 
+    available_imu = [col for col in IMU_SENSOR_PREFIXES if col in df.columns]
     motion = df.dropna(subset=["acc z", "gyro y"], how="all").copy()
     motion["elapsed_sec"] = np.floor(motion["elapsed_s"]).astype(int)
-    motion_sec = (
-        motion.groupby("elapsed_sec")
-        .agg(
-            accz_mean=("acc z", "mean"),
-            accz_std=("acc z", "std"),
-            gyroy_mean=("gyro y", "mean"),
-            gyroy_std=("gyro y", "std"),
-            sample_count=("time", "count"),
-        )
-        .reset_index()
-    )
+    agg_spec = {"sample_count": ("time", "count")}
+    for col in available_imu:
+        prefix = IMU_SENSOR_PREFIXES[col]
+        agg_spec[f"{prefix}_mean"] = (col, "mean")
+        agg_spec[f"{prefix}_std"] = (col, "std")
+    motion_sec = motion.groupby("elapsed_sec").agg(**agg_spec).reset_index()
     seconds = seconds.merge(motion_sec, on="elapsed_sec", how="left")
 
     temp = df.dropna(subset=["T8"], how="all")[["elapsed_s", "T8"]].sort_values("elapsed_s")
     seconds["T8"] = np.interp(seconds["elapsed_sec"], temp["elapsed_s"], temp["T8"])
-    for col in ["accz_mean", "gyroy_mean"]:
+    for col in [c for c in seconds.columns if c.endswith("_mean")]:
         seconds[col] = seconds[col].interpolate(limit_direction="both")
-    for col in ["accz_std", "gyroy_std"]:
+    for col in [c for c in seconds.columns if c.endswith("_std")]:
         seconds[col] = seconds[col].fillna(seconds[col].median())
     seconds["zone_reference"] = seconds["elapsed_sec"].map(zone_for_elapsed)
     seconds["T8_smooth"] = seconds["T8"].rolling(15, center=True, min_periods=1).median()
@@ -378,19 +385,24 @@ def duration_by_zone(reference_seconds: pd.DataFrame, map_df: pd.DataFrame) -> p
 def mechanical_zone_summary(seconds: pd.DataFrame, run: str, zone_col: str) -> pd.DataFrame:
     rows = []
     for zone, group in seconds.groupby(zone_col, sort=False):
-        rows.append(
-            {
-                "run": run,
-                "zone": zone,
-                "T8_mean_C": group["T8"].mean(),
-                "T8_min_C": group["T8"].min(),
-                "T8_max_C": group["T8"].max(),
-                "accz_mean": group["accz_mean"].mean(),
-                "accz_std_median": group["accz_std"].median(),
-                "gyroy_mean": group["gyroy_mean"].mean(),
-                "gyroy_std_median": group["gyroy_std"].median(),
-            }
-        )
+        row = {
+            "run": run,
+            "zone": zone,
+            "T8_mean_C": group["T8"].mean(),
+            "T8_min_C": group["T8"].min(),
+            "T8_max_C": group["T8"].max(),
+        }
+        for prefix in IMU_SENSOR_PREFIXES.values():
+            mean_col = f"{prefix}_mean"
+            std_col = f"{prefix}_std"
+            if mean_col in group.columns:
+                row[f"{prefix}_mean"] = group[mean_col].mean()
+                row[f"{prefix}_min"] = group[mean_col].min()
+                row[f"{prefix}_max"] = group[mean_col].max()
+            if std_col in group.columns:
+                row[f"{prefix}_std_median"] = group[std_col].median()
+                row[f"{prefix}_std_max"] = group[std_col].max()
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
@@ -405,7 +417,11 @@ def mechanical_delta(reference_seconds: pd.DataFrame, irregular_seconds: pd.Data
         ],
         ignore_index=True,
     )
-    metrics = ["T8_mean_C", "T8_min_C", "T8_max_C", "accz_mean", "accz_std_median", "gyroy_mean", "gyroy_std_median"]
+    metrics = [
+        col
+        for col in summary.columns
+        if col not in {"run", "zone"} and pd.api.types.is_numeric_dtype(summary[col])
+    ]
     pivot = summary.pivot_table(index="zone", columns="run", values=metrics)
     rows = []
     for zone in pivot.index:

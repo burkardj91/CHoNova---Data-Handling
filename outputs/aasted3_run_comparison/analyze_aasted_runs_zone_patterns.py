@@ -37,6 +37,7 @@ COMPARISON_FIGURE_PREFIX = safe_filename(COMPARISON_RUN_NAME)
 BASE_REPORT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
 ULTRASOUND_REPORT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
 FINAL_REPORT_WORKBOOK = OUTPUT_DIR / f"aasted3_{COMPARISON_FIGURE_PREFIX}_comparison_report.xlsx"
+RUN_OUTPUT_DIR = OUTPUT_DIR / "runs" / COMPARISON_FIGURE_PREFIX
 
 US_CORRECTION_COEFFICIENTS = {
     "Rx1Tx1": [0.6952085988953896, -0.021822771399044455, 0.0037091753271136572, -0.0002082564521397378, 3.245923482062673e-06],
@@ -936,11 +937,13 @@ def aasted_detachment_analysis(
         cps = detect_us_change_points(seg, signal_col)
         selected = None
         count_until = 0
+        first_cp = cps[0] if cps else None
         for idx, cp in enumerate(cps, 1):
             level = us_level_near(seg, signal_col, cp["change_point_s"], 5.0)
             met = bool(pd.notna(level) and level >= threshold)
             if selected is None:
                 count_until = idx
+            cp_zone = zone_at_time(detected_zones, run_name, cp["change_point_s"])
             cp_rows.append(
                 {
                     "run": run_name,
@@ -948,6 +951,12 @@ def aasted_detachment_analysis(
                     "signal_column": signal_col,
                     "change_point_index": idx,
                     **cp,
+                    "detachment_onset_s": onset,
+                    "change_point_after_detachment_onset_s": cp["change_point_s"] - onset,
+                    "change_point_zone": cp_zone,
+                    "analysis_domain": "detachment_onset_to_run_end",
+                    "analysis_window_start_s": onset,
+                    "analysis_window_end_s": window_end,
                     "deposition_reference_window_s": f"{float(landmark['deposition_s']) - 5.0:.1f}-{float(landmark['deposition_s']):.1f}",
                     "reference_us_level": reference,
                     "threshold_10pct_lower": threshold,
@@ -974,6 +983,9 @@ def aasted_detachment_analysis(
             selected_level = np.nan
             count_until = 0
         offset_zone = zone_at_time(detected_zones, run_name, offset)
+        offset_zone_row = detected_zones[(detected_zones["run"] == run_name) & (detected_zones["zone"] == offset_zone)]
+        offset_zone_start = float(offset_zone_row.iloc[0]["detected_start_s"]) if not offset_zone_row.empty else np.nan
+        offset_zone_end = float(offset_zone_row.iloc[0]["detected_end_s"]) if not offset_zone_row.empty else np.nan
         complete_before_demoulding = bool(pd.notna(offset) and pd.notna(demould_start) and offset < demould_start)
         summary_rows.append(
             {
@@ -984,10 +996,17 @@ def aasted_detachment_analysis(
                 "deposition_s": float(landmark["deposition_s"]),
                 "crystallization_onset_s": landmark["crystallization_onset_s"],
                 "detachment_onset_s": onset,
+                "analysis_domain": "detachment_onset_to_run_end",
+                "analysis_window_start_s": onset,
                 "analysis_window_end_s": window_end,
+                "first_change_point_s": first_cp["change_point_s"] if first_cp is not None else np.nan,
+                "first_change_point_after_onset_s": first_cp["change_point_s"] - onset if first_cp is not None else np.nan,
+                "first_change_point_zone": zone_at_time(detected_zones, run_name, first_cp["change_point_s"]) if first_cp is not None else "",
                 "detachment_offset_s": offset,
                 "detachment_offset_status": status,
                 "detachment_offset_zone": offset_zone,
+                "detachment_offset_zone_start_s": offset_zone_start,
+                "detachment_offset_zone_end_s": offset_zone_end,
                 "demoulding_twisting_start_s": demould_start,
                 "complete_detachment_before_demoulding": complete_before_demoulding,
                 "detachment_onset_to_offset_s": offset - onset if pd.notna(offset) else np.nan,

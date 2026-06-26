@@ -7,8 +7,10 @@ import pandas as pd
 
 from analyze_aasted_runs_zone_patterns import (
     COMPARISON_CSV,
+    COMPARISON_FIGURE_PREFIX,
     COMPARISON_RUN_NAME,
     REFERENCE_CSV,
+    REFERENCE_FIGURE_PREFIX,
     REFERENCE_RUN_NAME,
     OUTPUT_DIR,
     TEMP_SENSORS,
@@ -195,8 +197,8 @@ def make_figure(path: Path, run_name: str, csv_path: Path) -> Path:
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ref_path = OUTPUT_DIR / "reference_2291_4160_temperature_accz_zones.svg"
-    comparison_path = OUTPUT_DIR / "old_configuration_temperature_accz_zones.svg"
+    ref_path = OUTPUT_DIR / f"{REFERENCE_FIGURE_PREFIX}_temperature_accz_zones.svg"
+    comparison_path = OUTPUT_DIR / f"{COMPARISON_FIGURE_PREFIX}_temperature_accz_zones.svg"
     make_figure(ref_path, REFERENCE_RUN_NAME, REFERENCE_CSV)
     make_figure(comparison_path, COMPARISON_RUN_NAME, COMPARISON_CSV)
     print(ref_path)

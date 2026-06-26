@@ -12,9 +12,11 @@ from PIL import Image, ImageDraw, ImageFont
 from analyze_aasted_runs_zone_patterns import (
     COMPARISON_CSV,
     COMPARISON_RUN_NAME,
+    FINAL_REPORT_WORKBOOK,
     REFERENCE_CSV,
     REFERENCE_RUN_NAME,
     OUTPUT_DIR,
+    ULTRASOUND_REPORT_WORKBOOK,
     TEMP_SENSORS,
     build_seconds,
     detect_pattern_zones,
@@ -22,8 +24,8 @@ from analyze_aasted_runs_zone_patterns import (
 )
 
 
-SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
-OUTPUT_WORKBOOK = OUTPUT_DIR / "aasted3_old_configuration_comparison_report.xlsx"
+SOURCE_WORKBOOK = ULTRASOUND_REPORT_WORKBOOK
+OUTPUT_WORKBOOK = FINAL_REPORT_WORKBOOK
 MOULD_WIDTH = 112.2
 MOULD_HEIGHT = 33.3
 
@@ -235,11 +237,11 @@ def add_contour_sheets() -> Path:
         zone_scales[zone] = scale_for_values(group[PRODUCT_CONTOUR_SENSORS].to_numpy(dtype=float).ravel())
     contour_dir = OUTPUT_DIR / "contour_images"
     contour_dir.mkdir(parents=True, exist_ok=True)
-    for prefix in [REFERENCE_RUN_NAME, COMPARISON_RUN_NAME, "irregular_119-2290s"]:
+    for prefix in [REFERENCE_RUN_NAME, COMPARISON_RUN_NAME]:
         for old_image in contour_dir.glob(f"{prefix}_*.png"):
             old_image.unlink()
     workbook = load_workbook(SOURCE_WORKBOOK)
-    for sheet_name in ["Contour Reference", "Contour Irregular", "Contour Old Configuration", "Contour Data", "Sensor Coordinates"]:
+    for sheet_name in ["Contour Reference", "Contour Irregular", "Contour Old Configuration", "Contour Comparison", "Contour Data", "Sensor Coordinates"]:
         if sheet_name in workbook.sheetnames:
             del workbook[sheet_name]
 
@@ -255,7 +257,7 @@ def add_contour_sheets() -> Path:
     data_ws = workbook.create_sheet("Contour Data", 3)
     write_table(data_ws, means)
 
-    for run_name, sheet_name in [(REFERENCE_RUN_NAME, "Contour Reference"), (COMPARISON_RUN_NAME, "Contour Old Configuration")]:
+    for run_name, sheet_name in [(REFERENCE_RUN_NAME, "Contour Reference"), (COMPARISON_RUN_NAME, "Contour Comparison")]:
         ws = workbook.create_sheet(sheet_name, 2 if run_name.startswith("reference") else 3)
         ws["A1"] = f"{run_name}: mean mould temperature contours by detected zone"
         ws["A1"].font = Font(bold=True, size=15, color="1F4E78")

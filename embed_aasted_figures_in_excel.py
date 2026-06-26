@@ -12,10 +12,15 @@ from PIL import Image, ImageDraw, ImageFont
 from analyze_aasted_runs_zone_patterns import (
     COMPARISON_CSV,
     COMPARISON_RUN_NAME,
+    COMPARISON_FIGURE_PREFIX,
     REFERENCE_CSV,
     REFERENCE_RUN_NAME,
+    REFERENCE_FIGURE_PREFIX,
+    BASE_REPORT_WORKBOOK,
+    ULTRASOUND_REPORT_WORKBOOK,
     OUTPUT_DIR,
     TEMP_SENSORS,
+    US_CHANNELS,
     aasted_detachment_analysis,
     build_seconds,
     detect_pattern_zones,
@@ -25,10 +30,11 @@ from analyze_aasted_runs_zone_patterns import (
 )
 
 
-SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
-OUTPUT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
+SOURCE_WORKBOOK = BASE_REPORT_WORKBOOK
+OUTPUT_WORKBOOK = ULTRASOUND_REPORT_WORKBOOK
 TEMP_PLOT_SENSORS = ["T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"]
-ULTRASOUND_PLOT_CHANNELS = ["Rx1Tx1", "Rx2Tx2"]
+ULTRASOUND_PLOT_CHANNELS = [f"{channel}_tc" for channel in US_CHANNELS]
+ULTRASOUND_LABELS = {f"{channel}_tc": f"{channel} TC" for channel in US_CHANNELS}
 
 COLORS = {
     "T1": (127, 29, 29),
@@ -41,8 +47,8 @@ COLORS = {
     "T8": (17, 24, 39),
     "T9": (161, 98, 7),
     "acc z": (0, 0, 0),
-    "Rx1Tx1": (20, 83, 45),
-    "Rx2Tx2": (146, 64, 14),
+    "Rx1Tx1_tc": (20, 83, 45),
+    "Rx2Tx2_tc": (146, 64, 14),
 }
 
 ZONE_COLORS = [
@@ -186,7 +192,7 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
     draw.text((left, 26), f"{run_name}: temperatures and acc z with detected process zones", fill=(17, 24, 39), font=font(25, True))
     draw.text(
         (left, 58),
-        "x-axis uses absolute CSV time. Left axis: temperature T2-T9. Right axis: acc z. Outer right axis: T1 relabeled as humidity/RH.",
+        "x-axis uses absolute CSV time. Left axis: temperature T2-T9. Right axis: acc z. Outer right axis: T1 relabeled as humidity/RH. Lower panel: T7-corrected ultrasound.",
         fill=(71, 85, 105),
         font=font(15),
     )
@@ -237,7 +243,7 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
     paste_vertical_text(img, "Temperature T2-T9 [deg C]", (18, int(top + plot_h / 2 - 108)), (17, 24, 39), size=15)
     paste_vertical_text(img, "acc z [g]", (width - 78, int(top + plot_h / 2 - 42)), (17, 24, 39), size=15, clockwise=True)
     paste_vertical_text(img, "RH [%]", (width - 30, int(top + plot_h / 2 - 32)), COLORS["T1"], size=15, clockwise=True)
-    paste_vertical_text(img, "Ultrasound (a.u.)", (18, int(us_top + us_h / 2 - 72)), (17, 24, 39), size=15)
+    paste_vertical_text(img, "T-corrected ultrasound (a.u.)", (18, int(us_top + us_h / 2 - 98)), (17, 24, 39), size=15)
 
     for sensor in TEMP_PLOT_SENSORS:
         points = [(sx(float(t)), sy_temp(float(v))) for t, v in zip(temp["time"], temp[sensor]) if pd.notna(v)]
@@ -281,7 +287,9 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
                     draw.line((x, us_top, x, us_top + us_h), fill=color, width=4)
                     draw.text((x + 4, us_top + 18), f"{channel} complete", fill=color, font=font(10, True))
             elif "partial" in status:
-                draw.text((left + 8, us_top + 18 + 16 * ULTRASOUND_PLOT_CHANNELS.index(channel) if channel in ULTRASOUND_PLOT_CHANNELS else us_top + 18), f"{channel}: partial/no complete offset", fill=color, font=font(10, True))
+                signal_col = f"{channel}_tc"
+                y_note = us_top + 18 + 16 * ULTRASOUND_PLOT_CHANNELS.index(signal_col) if signal_col in ULTRASOUND_PLOT_CHANNELS else us_top + 18
+                draw.text((left + 8, y_note), f"{channel}: partial/no complete offset", fill=color, font=font(10, True))
 
     lx, ly = left, height - 62
     for idx, item in enumerate(["T1 / RH", *TEMP_PLOT_SENSORS, "acc z", *ULTRASOUND_PLOT_CHANNELS]):
@@ -289,7 +297,7 @@ def make_png(run_name: str, csv_path: Path, out_path: Path) -> Path:
         y = ly + (idx // 10) * 24
         color_key = "T1" if item == "T1 / RH" else item
         draw.line((x, y, x + 28, y), fill=COLORS[color_key], width=5 if color_key in ULTRASOUND_PLOT_CHANNELS else 4 if color_key in ["T8", "acc z"] else 3)
-        draw.text((x + 36, y - 8), item, fill=(17, 24, 39), font=font(13))
+        draw.text((x + 36, y - 8), ULTRASOUND_LABELS.get(item, item), fill=(17, 24, 39), font=font(13))
 
     table_x, table_y = left + plot_w - 430, us_top + us_h + 34
     draw.text((table_x, table_y), "Detected zone starts (absolute s)", fill=(17, 24, 39), font=font(13, True))
@@ -314,25 +322,25 @@ def write_note(ws, text: str) -> None:
 
 def embed_figures() -> Path:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    ref_png = OUTPUT_DIR / "reference_2291_4160_temperature_accz_zones.png"
-    comparison_png = OUTPUT_DIR / "old_configuration_temperature_accz_zones.png"
+    ref_png = OUTPUT_DIR / f"{REFERENCE_FIGURE_PREFIX}_temperature_accz_zones.png"
+    comparison_png = OUTPUT_DIR / f"{COMPARISON_FIGURE_PREFIX}_temperature_accz_zones.png"
     make_png(REFERENCE_RUN_NAME, REFERENCE_CSV, ref_png)
     make_png(COMPARISON_RUN_NAME, COMPARISON_CSV, comparison_png)
 
     wb = load_workbook(SOURCE_WORKBOOK)
-    for sheet_name in ["Figure Reference", "Figure Irregular", "Figure Old Configuration"]:
+    for sheet_name in ["Figure Reference", "Figure Irregular", "Figure Comparison", "Figure Old Configuration"]:
         if sheet_name in wb.sheetnames:
             del wb[sheet_name]
 
     ref_ws = wb.create_sheet("Figure Reference", 0)
-    write_note(ref_ws, "Reference run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
+    write_note(ref_ws, "Reference run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and T7-corrected Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
     ref_img = XLImage(str(ref_png))
     ref_img.width = 1120
     ref_img.height = 747
     ref_ws.add_image(ref_img, "A3")
 
-    comp_ws = wb.create_sheet("Figure Old Configuration", 1)
-    write_note(comp_ws, "Old-configuration comparison run: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
+    comp_ws = wb.create_sheet("Figure Comparison", 1)
+    write_note(comp_ws, f"{COMPARISON_RUN_NAME}: T2-T9 on temperature axis, T1 as RH, acc z on right axis, and T7-corrected Rx1Tx1/Rx2Tx2 ultrasound traces in lower panel.")
     comp_img = XLImage(str(comparison_png))
     comp_img.width = 1120
     comp_img.height = 747

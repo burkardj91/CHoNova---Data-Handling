@@ -10,9 +10,16 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 from analyze_aasted_runs_zone_patterns import OUTPUT_DIR, PRODUCT_SENSORS
+from analyze_aasted_runs_zone_patterns import (
+    COMPARISON_FIGURE_PREFIX,
+    COMPARISON_RUN_NAME,
+    FINAL_REPORT_WORKBOOK,
+    REFERENCE_FIGURE_PREFIX,
+    REFERENCE_RUN_NAME,
+)
 
 
-SOURCE_WORKBOOK = OUTPUT_DIR / "aasted3_old_configuration_comparison_report.xlsx"
+SOURCE_WORKBOOK = FINAL_REPORT_WORKBOOK
 SUMMARY_DIR = OUTPUT_DIR / "summary"
 RAW_DIR = SUMMARY_DIR / "output_raw_data"
 SUMMARY_WORKBOOK = SUMMARY_DIR / "aasted3_reference_based_comparison_summary.xlsx"
@@ -82,7 +89,7 @@ def make_readme() -> pd.DataFrame:
             },
             {
                 "topic": "Current comparison",
-                "explanation": "Reference = reference_2291-4160. Comparison = old-configuration. Raw copies are stored in inputs/aasted3/.",
+                "explanation": f"Reference = {REFERENCE_RUN_NAME}. Comparison = {COMPARISON_RUN_NAME}. Raw copies, experimental setup, experimental summary, and temperature-correction coefficients are stored in inputs/aasted3/.",
             },
             {
                 "topic": "Zone definition",
@@ -102,7 +109,7 @@ def make_readme() -> pd.DataFrame:
             },
             {
                 "topic": "Aasted detachment offset",
-                "explanation": "Optional architecture is installed. When a parameter_summary file is placed in inputs/aasted3, the report can mark crystallization onset, detachment onset, and complete/partial ultrasound detachment offsets using positive change points and a pre-deposition reference minus 10% threshold.",
+                "explanation": "The architecture reads aa3_trials experimental summary or parameter_summary files from inputs/aasted3. The report marks crystallization onset, detachment onset, and complete/partial ultrasound detachment offsets using T7-corrected ultrasound, positive change points, and a pre-deposition reference minus 10% threshold.",
             },
             {
                 "topic": "Demoulding subclasses",
@@ -192,8 +199,8 @@ def build_summary_workbook() -> None:
     ws["A1"] = "Reference and comparison zone visualizations"
     ws["A1"].font = Font(bold=True, size=15, color="1F4E78")
     images = [
-        ("Reference run", OUTPUT_DIR / "reference_2291_4160_temperature_accz_zones.png"),
-        ("Comparison run", OUTPUT_DIR / "old_configuration_temperature_accz_zones.png"),
+        ("Reference run", OUTPUT_DIR / f"{REFERENCE_FIGURE_PREFIX}_temperature_accz_zones.png"),
+        ("Comparison run", OUTPUT_DIR / f"{COMPARISON_FIGURE_PREFIX}_temperature_accz_zones.png"),
     ]
     row = 3
     for title, path in images:
@@ -221,13 +228,19 @@ def build_summary_workbook() -> None:
                         ColorScaleRule(start_type="min", start_color="63BE7B", mid_type="num", mid_value=0, mid_color="FFFFFF", end_type="max", end_color="F8696B"),
                     )
 
+    ws = wb.create_sheet("Quality Comparison")
+    row = append_table(ws, read_sheet("Quality Comparison"), 1, "Quality-linked parameter comparison")
+    row = append_table(ws, read_sheet("Viscosity Ratio"), row, "T7-corrected ultrasound viscosity ratio")
+    row = append_table(ws, read_sheet("Aasted Detachment Homogeneity"), row, "Detachment homogeneity")
+    append_table(ws, read_sheet("Aasted Detachment Summary"), row, "Per-channel detachment decision")
+
     ws = wb.create_sheet("Contour Overview")
     ws["A1"] = "Product temperature contour overview"
     ws["A1"].font = Font(bold=True, size=15, color="1F4E78")
     ws["A2"] = f"Contours use product sensors: {', '.join(PRODUCT_SENSORS)}. Hotspot delta matrix is included below; full contour data is exported separately."
     ws["A2"].alignment = Alignment(wrap_text=True)
     row = 4
-    for title, prefix in [("Reference contours", "reference_2291-4160"), ("Comparison contours", "old-configuration")]:
+    for title, prefix in [("Reference contours", REFERENCE_RUN_NAME), ("Comparison contours", COMPARISON_RUN_NAME)]:
         ws.cell(row, 1, title)
         ws.cell(row, 1).font = Font(bold=True, color="1F4E78")
         row += 1
@@ -268,9 +281,15 @@ def export_detail_workbooks() -> None:
         "Detected Product By Zone",
         "Detected Product Delta",
         "Hotspot Sensor Data",
+        "Temperature Correction",
+        "Corrected Raw Inventory",
+        "Experimental Setup",
+        "Viscosity Ratio",
         "Aasted Detachment Summary",
         "Aasted US Change Points",
+        "Aasted Detachment Homogeneity",
         "Aasted Parameter Landmarks",
+        "Quality Comparison",
         "Alignment Path Sample",
         "Reference Pattern",
         "Comparison Pattern",

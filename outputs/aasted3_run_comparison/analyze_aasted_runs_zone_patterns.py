@@ -13,13 +13,37 @@ from openpyxl.utils import get_column_letter
 
 WORKSPACE = Path(r"C:\Users\BurkardJohannes\Documents\CHoNova _ Data Understanding")
 OUTPUT_DIR = WORKSPACE / "outputs" / "aasted3_run_comparison"
-COMPARISON_CSV = WORKSPACE / "inputs" / "aasted3" / "old_configuration.csv"
+COMPARISON_CSV = WORKSPACE / "inputs" / "aasted3" / "17_3_f_m_aa3-25_06_26-2160-4374s.csv"
 IRREGULAR_CSV = COMPARISON_CSV  # Backward-compatible import name for helper scripts.
 REFERENCE_CSV = WORKSPACE / "inputs" / "aasted3" / "reference_2291_4160.csv"
 REFERENCE_RUN_NAME = "reference_2291-4160"
-COMPARISON_RUN_NAME = "old-configuration"
-PARAMETER_SUMMARY_PATTERNS = ["*parameter_summary*.xlsx", "*parameter_summary*.csv"]
+COMPARISON_RUN_NAME = "17_3_f_m_aa3-25_06_26-2160-4374s"
+PARAMETER_SUMMARY_PATTERNS = ["*parameter_summary*.xlsx", "*parameter_summary*.csv", "*experimental_summary*.xlsx", "*experimental summary*.xlsx"]
+EXPERIMENTAL_SETUP_PATTERNS = ["*experimental_setup*.xlsx", "*experimental setup*.xlsx"]
+TEMPERATURE_CORRECTION_CSV = WORKSPACE / "inputs" / "aasted3" / "aasted3_temperature_correction_coefficients.csv"
+CORRECTED_RAW_DIR = WORKSPACE / "inputs" / "aasted3" / "temperature_corrected_raw"
 US_CHANNELS = ["Rx1Tx1", "Rx2Tx2"]
+ALL_US_CHANNELS = ["Rx1Tx1", "Rx1Tx2", "Rx2Tx1", "Rx2Tx2"]
+TEMP_CORRECTION_SENSOR = "T7"
+
+
+def safe_filename(value: str) -> str:
+    keep = [ch if ch.isalnum() else "_" for ch in str(value)]
+    return "_".join("".join(keep).split("_")).strip("_")
+
+
+REFERENCE_FIGURE_PREFIX = safe_filename(REFERENCE_RUN_NAME)
+COMPARISON_FIGURE_PREFIX = safe_filename(COMPARISON_RUN_NAME)
+BASE_REPORT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
+ULTRASOUND_REPORT_WORKBOOK = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_with_ultrasound_figures.xlsx"
+FINAL_REPORT_WORKBOOK = OUTPUT_DIR / f"aasted3_{COMPARISON_FIGURE_PREFIX}_comparison_report.xlsx"
+
+US_CORRECTION_COEFFICIENTS = {
+    "Rx1Tx1": [0.6952085988953896, -0.021822771399044455, 0.0037091753271136572, -0.0002082564521397378, 3.245923482062673e-06],
+    "Rx1Tx2": [-0.0692884241972798, 0.010234319131273829, -0.0010987231115144628, 4.696490232034503e-05, -6.960118543105261e-07],
+    "Rx2Tx1": [-0.048660102229808155, 0.006857199971676996, -0.0007691346333861185, 3.385840046021632e-05, -5.129374107408218e-07],
+    "Rx2Tx2": [0.8917009154106912, 0.037810097379146014, -0.00424490665181043, 0.0001020512497149748, -7.465580911868695e-07],
+}
 
 # Product temperature sensors. User correction listed "T2, T4, T4, T5, T7";
 # treat the duplicated T4 as T3 to keep five unique product locations.
@@ -67,10 +91,36 @@ ZONES = [
 ]
 
 
+def correction_polynomial(channel: str, temperature_c: pd.Series | np.ndarray) -> pd.Series:
+    coeffs = US_CORRECTION_COEFFICIENTS[channel]
+    temperature = pd.Series(temperature_c, dtype=float)
+    out = pd.Series(0.0, index=temperature.index)
+    for power, coeff in enumerate(coeffs):
+        out = out + coeff * (temperature**power)
+    return out
+
+
+def add_temperature_corrected_us(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if TEMP_CORRECTION_SENSOR not in df.columns:
+        return df
+    temp = df[["time", TEMP_CORRECTION_SENSOR]].dropna().sort_values("time")
+    if temp.empty:
+        return df
+    df[f"{TEMP_CORRECTION_SENSOR}_interp_C"] = np.interp(df["time"], temp["time"], temp[TEMP_CORRECTION_SENSOR])
+    for channel in ALL_US_CHANNELS:
+        if channel not in df.columns:
+            continue
+        correction = correction_polynomial(channel, df[f"{TEMP_CORRECTION_SENSOR}_interp_C"])
+        df[f"{channel}_temp_correction"] = correction
+        df[f"{channel}_tc"] = df[channel] / correction.replace(0, np.nan)
+    return df
+
+
 def read_run(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df["elapsed_s"] = df["time"] - df["time"].min()
-    return df
+    return add_temperature_corrected_us(df)
 
 
 def zone_for_elapsed(elapsed: float) -> str:
@@ -650,6 +700,15 @@ def find_parameter_summary_file() -> Path | None:
     return None
 
 
+def find_experimental_setup_file() -> Path | None:
+    input_dir = WORKSPACE / "inputs" / "aasted3"
+    for pattern in EXPERIMENTAL_SETUP_PATTERNS:
+        hits = sorted(input_dir.glob(pattern))
+        if hits:
+            return hits[0]
+    return None
+
+
 def _normalized_columns(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     out.columns = [
@@ -659,11 +718,60 @@ def _normalized_columns(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def load_experimental_setup() -> pd.DataFrame:
+    path = find_experimental_setup_file()
+    if path is None:
+        return pd.DataFrame()
+    sheets = pd.read_excel(path, sheet_name=None)
+    selected = None
+    for df in sheets.values():
+        normalized = _normalized_columns(df)
+        cols = list(normalized.columns)
+        if _find_column(cols, ["quality"]) and _find_column(cols, ["remarks"]):
+            selected = normalized
+            break
+    if selected is None:
+        selected = _normalized_columns(next(iter(sheets.values())))
+    raw = selected
+    raw = _normalized_columns(raw).dropna(how="all")
+    columns = list(raw.columns)
+    run_col = _find_column(columns, ["experimental", "name"])
+    if run_col is None:
+        return pd.DataFrame()
+    chocolate_col = "chocolate" if "chocolate" in columns else _find_column(columns, ["chocolate"])
+    rename_map = {
+        run_col: "protocol_run_name",
+        _find_column(columns, ["chocolate", "test"]): "protocol_chocolate_test_or_empty_flag",
+        _find_column(columns, ["runs", "within"]): "runs_within_trial",
+        _find_column(columns, ["date"]): "date",
+        _find_column(columns, ["duration"]): "protocol_duration_s",
+        chocolate_col: "chocolate",
+        _find_column(columns, ["tempering"]): "tempering",
+        _find_column(columns, ["remarks"]): "remarks",
+        _find_column(columns, ["quality"]): "quality_0_not_good_1_good",
+    }
+    rename_map = {k: v for k, v in rename_map.items() if k is not None}
+    out = raw.rename(columns=rename_map)[list(rename_map.values())].copy()
+    out["run"] = out["protocol_run_name"].map(run_lookup_name)
+    out["source_file"] = path.name
+    return out
+
+
 def _first_existing(row: pd.Series, candidates: list[str]) -> object:
     for col in candidates:
         if col in row and pd.notna(row[col]):
             return row[col]
     return np.nan
+
+
+def _find_column(columns: list[str], must_include: list[str], any_include: list[str] | None = None) -> str | None:
+    for col in columns:
+        text = str(col).lower()
+        if all(token in text for token in must_include) and (
+            any_include is None or any(token in text for token in any_include)
+        ):
+            return col
+    return None
 
 
 def load_parameter_landmarks() -> pd.DataFrame:
@@ -685,7 +793,44 @@ def load_parameter_landmarks() -> pd.DataFrame:
     else:
         raw = pd.concat(pd.read_excel(path, sheet_name=None).values(), ignore_index=True)
     raw = _normalized_columns(raw).dropna(how="all")
+    columns = list(raw.columns)
+    run_col = _find_column(columns, ["experimental", "name"]) or _find_column(columns, ["run"]) or _find_column(columns, ["sample"])
+    deposition_col = _find_column(columns, ["deposition"])
+    wide_channel_specs = {
+        "Rx1Tx1": {
+            "crystallization": _find_column(columns, ["crystallization", "start"], ["t1r1", "r1t1", "rx1tx1"]),
+            "detachment": _find_column(columns, ["detachment", "onset"], ["t1r1", "r1t1", "rx1tx1"]),
+        },
+        "Rx2Tx2": {
+            "crystallization": _find_column(columns, ["crystallization", "start"], ["t2r2", "r2t2", "rx2tx2"]),
+            "detachment": _find_column(columns, ["detachment", "onset"], ["t2r2", "r2t2", "rx2tx2"]),
+        },
+    }
     rows = []
+    if run_col and deposition_col and any(spec["detachment"] for spec in wide_channel_specs.values()):
+        for _, row in raw.iterrows():
+            run = row.get(run_col)
+            deposition = row.get(deposition_col)
+            if pd.isna(run) or pd.isna(deposition):
+                continue
+            for channel, spec in wide_channel_specs.items():
+                detachment_col = spec["detachment"]
+                if detachment_col is None or pd.isna(row.get(detachment_col)):
+                    continue
+                crystallization_col = spec["crystallization"]
+                rows.append(
+                    {
+                        "run": str(run),
+                        "deposition_s": float(row[deposition_col]),
+                        "crystallization_onset_s": float(row[crystallization_col]) if crystallization_col and pd.notna(row.get(crystallization_col)) else np.nan,
+                        "detachment_onset_s": float(row[detachment_col]),
+                        "channel": channel,
+                        "source_file": path.name,
+                        "input_status": "loaded_wide_aasted_summary",
+                    }
+                )
+        return pd.DataFrame(rows)
+
     for _, row in raw.iterrows():
         run = _first_existing(row, ["run", "run_name", "sample", "sample_id", "file", "filename", "comparison_label"])
         deposition = _first_existing(row, ["deposition_s", "deposition", "deposition_time_s", "deposition_absolute_s"])
@@ -731,9 +876,22 @@ def run_lookup_name(name: str) -> str:
     text = str(name).lower()
     if "ref" in text or "2291" in text:
         return REFERENCE_RUN_NAME
+    if "2160-4374" in text or "2160_4374" in text:
+        return COMPARISON_RUN_NAME
     if "old" in text or "configuration" in text or "split" in text:
         return COMPARISON_RUN_NAME
     return str(name)
+
+
+def zone_at_time(zones: pd.DataFrame, run_name: str, elapsed_s: float) -> str:
+    if pd.isna(elapsed_s):
+        return ""
+    hit = zones[
+        (zones["run"] == run_name)
+        & (zones["detected_start_s"] <= float(elapsed_s))
+        & (zones["detected_end_s"] >= float(elapsed_s))
+    ]
+    return "" if hit.empty else str(hit.iloc[0]["zone"])
 
 
 def aasted_detachment_analysis(
@@ -763,21 +921,23 @@ def aasted_detachment_analysis(
             continue
         df = runs[run_name]
         channel = landmark["channel"]
-        if channel not in df.columns:
+        signal_col = f"{channel}_tc" if f"{channel}_tc" in df.columns else channel
+        if signal_col not in df.columns:
             continue
-        z = detected_zones[(detected_zones["run"] == run_name) & (detected_zones["zone"] == "final_demoulding")]
-        window_end = float(z.iloc[0]["detected_start_s"]) if not z.empty else float(df["elapsed_s"].max())
+        demould = detected_zones[(detected_zones["run"] == run_name) & (detected_zones["zone"] == "demoulding_twisting")]
+        demould_start = float(demould.iloc[0]["detected_start_s"]) if not demould.empty else np.nan
+        window_end = float(df["elapsed_s"].max())
         onset = float(landmark["detachment_onset_s"])
         seg = df[(df["elapsed_s"] >= onset) & (df["elapsed_s"] <= window_end)].copy()
         if seg.empty:
             continue
-        reference = median_window(df, channel, float(landmark["deposition_s"]) - 5.0, float(landmark["deposition_s"]))
+        reference = median_window(df, signal_col, float(landmark["deposition_s"]) - 5.0, float(landmark["deposition_s"]))
         threshold = reference - 0.10 * abs(reference)
-        cps = detect_us_change_points(seg, channel)
+        cps = detect_us_change_points(seg, signal_col)
         selected = None
         count_until = 0
         for idx, cp in enumerate(cps, 1):
-            level = us_level_near(seg, channel, cp["change_point_s"], 5.0)
+            level = us_level_near(seg, signal_col, cp["change_point_s"], 5.0)
             met = bool(pd.notna(level) and level >= threshold)
             if selected is None:
                 count_until = idx
@@ -785,6 +945,7 @@ def aasted_detachment_analysis(
                 {
                     "run": run_name,
                     "channel": channel,
+                    "signal_column": signal_col,
                     "change_point_index": idx,
                     **cp,
                     "deposition_reference_window_s": f"{float(landmark['deposition_s']) - 5.0:.1f}-{float(landmark['deposition_s']):.1f}",
@@ -805,37 +966,228 @@ def aasted_detachment_analysis(
         elif cps:
             offset = np.nan
             status = "partial_detachment_no_change_point_met_threshold"
-            selected_level = us_level_near(seg, channel, cps[-1]["change_point_s"], 5.0)
+            selected_level = us_level_near(seg, signal_col, cps[-1]["change_point_s"], 5.0)
             count_until = len(cps)
         else:
             offset = np.nan
             status = "no_positive_change_point_detected"
             selected_level = np.nan
             count_until = 0
+        offset_zone = zone_at_time(detected_zones, run_name, offset)
+        complete_before_demoulding = bool(pd.notna(offset) and pd.notna(demould_start) and offset < demould_start)
         summary_rows.append(
             {
                 "run": run_name,
                 "channel": channel,
+                "signal_column": signal_col,
+                "signal_basis": "T7 temperature-normalized ultrasound; channel_tc = raw / polynomial(T7)",
                 "deposition_s": float(landmark["deposition_s"]),
                 "crystallization_onset_s": landmark["crystallization_onset_s"],
                 "detachment_onset_s": onset,
                 "analysis_window_end_s": window_end,
                 "detachment_offset_s": offset,
                 "detachment_offset_status": status,
+                "detachment_offset_zone": offset_zone,
+                "demoulding_twisting_start_s": demould_start,
+                "complete_detachment_before_demoulding": complete_before_demoulding,
+                "detachment_onset_to_offset_s": offset - onset if pd.notna(offset) else np.nan,
+                "detachment_offset_minus_deposition_s": offset - float(landmark["deposition_s"]) if pd.notna(offset) else np.nan,
+                "detachment_onset_minus_deposition_s": onset - float(landmark["deposition_s"]),
+                "crystallization_onset_minus_deposition_s": landmark["crystallization_onset_s"] - float(landmark["deposition_s"]) if pd.notna(landmark["crystallization_onset_s"]) else np.nan,
                 "reference_us_level": reference,
                 "threshold_10pct_lower": threshold,
                 "us_level_at_decision": selected_level,
                 "change_points_detected_total": len(cps),
                 "change_points_until_detachment_or_last": count_until,
                 "pattern_description": (
-                    f"{len(cps)} positive upward change point(s) from detachment onset to the start of final demoulding. "
+                    f"{len(cps)} positive upward change point(s) from detachment onset to run end. "
                     f"{'First complete offset at ' + f'{offset:.1f}s' if pd.notna(offset) else 'No change point reached the pre-deposition -10% threshold'}."
                 ),
-                "method": "positive/upward local mean-shift change points; complete detachment if US at change point >= 10%-below-pre-deposition-reference threshold",
+                "method": "positive/upward local mean-shift change points on T7-corrected ultrasound; complete detachment if US at change point >= 10%-below-pre-deposition-reference threshold",
                 "source_file": landmark["source_file"],
             }
         )
     return pd.DataFrame(summary_rows), pd.DataFrame(cp_rows), landmarks
+
+
+def viscosity_ratio_summary(runs: dict[str, pd.DataFrame], landmarks: pd.DataFrame) -> pd.DataFrame:
+    if landmarks.empty:
+        return pd.DataFrame()
+    rows = []
+    for run_name, df in runs.items():
+        run_landmarks = landmarks[landmarks["run"].map(run_lookup_name).eq(run_name)].copy()
+        if run_landmarks.empty:
+            continue
+        deposition = float(pd.to_numeric(run_landmarks["deposition_s"], errors="coerce").dropna().iloc[0])
+        ratios = []
+        for channel in US_CHANNELS:
+            signal_col = f"{channel}_tc" if f"{channel}_tc" in df.columns else channel
+            if signal_col not in df.columns:
+                continue
+            pre = median_window(df, signal_col, deposition - 5.0, deposition)
+            post = median_window(df, signal_col, deposition + 50.0, deposition + 55.0)
+            ratio = post / pre if pd.notna(pre) and abs(pre) > 1e-12 else np.nan
+            ratios.append(ratio)
+            rows.append(
+                {
+                    "run": run_name,
+                    "channel": channel,
+                    "signal_column": signal_col,
+                    "deposition_s": deposition,
+                    "pre_deposition_window_s": f"{deposition - 5.0:.1f}-{deposition:.1f}",
+                    "post_deposition_window_s": f"{deposition + 50.0:.1f}-{deposition + 55.0:.1f}",
+                    "pre_deposition_us_level": pre,
+                    "post_50s_us_level": post,
+                    "viscosity_ratio_channel": ratio,
+                    "viscosity_ratio_mean_rx1rx2": np.nan,
+                    "method": "median(T-corrected US 50-55 s after deposition) / median(T-corrected US 5 s before deposition)",
+                }
+            )
+        mean_ratio = float(np.nanmean(ratios)) if ratios else np.nan
+        for row in rows:
+            if row["run"] == run_name:
+                row["viscosity_ratio_mean_rx1rx2"] = mean_ratio
+    return pd.DataFrame(rows)
+
+
+def detachment_homogeneity_summary(detachment_summary: pd.DataFrame) -> pd.DataFrame:
+    if detachment_summary.empty or "detachment_offset_s" not in detachment_summary.columns:
+        return pd.DataFrame()
+    rows = []
+    for run, group in detachment_summary.groupby("run", dropna=False):
+        offsets = pd.to_numeric(group["detachment_offset_s"], errors="coerce").dropna()
+        onsets = pd.to_numeric(group["detachment_onset_s"], errors="coerce").dropna()
+        durations = pd.to_numeric(group["detachment_onset_to_offset_s"], errors="coerce").dropna()
+        cps = pd.to_numeric(group["change_points_until_detachment_or_last"], errors="coerce").dropna()
+        complete = group[group["detachment_offset_status"].eq("complete_detachment_for_channel")]
+        rows.append(
+            {
+                "run": run,
+                "channels_evaluated": int(group["channel"].nunique()),
+                "channels_complete": int(complete["channel"].nunique()),
+                "complete_channels": ", ".join(complete["channel"].astype(str).tolist()),
+                "both_primary_channels_complete": bool(set(US_CHANNELS).issubset(set(complete["channel"].astype(str)))),
+                "all_complete_before_demoulding": bool((complete["complete_detachment_before_demoulding"] == True).all()) if not complete.empty else False,
+                "detachment_onset_spread_s": float(onsets.max() - onsets.min()) if len(onsets) > 1 else 0.0,
+                "detachment_offset_spread_s": float(offsets.max() - offsets.min()) if len(offsets) > 1 else np.nan,
+                "detachment_duration_spread_s": float(durations.max() - durations.min()) if len(durations) > 1 else np.nan,
+                "mean_change_points_until_offset_or_last": float(cps.mean()) if not cps.empty else np.nan,
+                "homogeneity_reading": (
+                    "homogeneous complete detachment"
+                    if len(offsets) >= 2 and (offsets.max() - offsets.min()) <= 30
+                    else "heterogeneous or partial detachment"
+                    if len(offsets) >= 1
+                    else "no complete offset detected"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def quality_comparison_summary(
+    setup: pd.DataFrame,
+    landmarks: pd.DataFrame,
+    viscosity: pd.DataFrame,
+    detachment: pd.DataFrame,
+    detected_product_delta: pd.DataFrame,
+    hotspot_summary: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = []
+    if setup.empty:
+        return pd.DataFrame()
+    setup_idx = setup.drop_duplicates("run").set_index("run")
+    runs = [REFERENCE_RUN_NAME, COMPARISON_RUN_NAME]
+    for run in runs:
+        meta = setup_idx.loc[run].to_dict() if run in setup_idx.index else {}
+        run_landmarks = landmarks[landmarks["run"].map(run_lookup_name).eq(run)] if not landmarks.empty else pd.DataFrame()
+        run_visc = viscosity[viscosity["run"].eq(run)] if not viscosity.empty else pd.DataFrame()
+        run_det = detachment[detachment["run"].eq(run)] if not detachment.empty else pd.DataFrame()
+        mean_product_delta = 0.0 if run == REFERENCE_RUN_NAME else (
+            detected_product_delta.loc[
+                detected_product_delta["sensor"].isin(PRODUCT_SENSORS),
+                "mean_delta_comparison_minus_reference_C",
+            ].mean()
+            if "mean_delta_comparison_minus_reference_C" in detected_product_delta.columns
+            else np.nan
+        )
+        rows.append(
+            {
+                "run": run,
+                "quality_0_not_good_1_good": meta.get("quality_0_not_good_1_good", np.nan),
+                "remarks": meta.get("remarks", ""),
+                "chocolate": meta.get("chocolate", ""),
+                "protocol_duration_s": meta.get("protocol_duration_s", np.nan),
+                "viscosity_ratio_mean_rx1rx2": run_visc["viscosity_ratio_mean_rx1rx2"].dropna().iloc[0] if not run_visc.empty and run_visc["viscosity_ratio_mean_rx1rx2"].notna().any() else np.nan,
+                "crystallization_onset_minus_deposition_mean_s": (run_landmarks["crystallization_onset_s"] - run_landmarks["deposition_s"]).mean() if not run_landmarks.empty else np.nan,
+                "detachment_onset_minus_deposition_mean_s": (run_landmarks["detachment_onset_s"] - run_landmarks["deposition_s"]).mean() if not run_landmarks.empty else np.nan,
+                "detachment_offset_minus_deposition_mean_s": run_det["detachment_offset_minus_deposition_s"].mean() if not run_det.empty else np.nan,
+                "complete_detachment_channels": ", ".join(run_det.loc[run_det["detachment_offset_status"].eq("complete_detachment_for_channel"), "channel"].astype(str).tolist()) if not run_det.empty else "",
+                "complete_before_demoulding_channels": ", ".join(run_det.loc[run_det["complete_detachment_before_demoulding"].eq(True), "channel"].astype(str).tolist()) if not run_det.empty else "",
+                "mean_change_points_until_offset_or_last": run_det["change_points_until_detachment_or_last"].mean() if not run_det.empty else np.nan,
+                "mean_product_delta_vs_reference_C": mean_product_delta,
+                "mean_hotspot_spread_C": hotspot_summary.loc[hotspot_summary["run"].eq(run), "spread_hottest_minus_coolest_C"].mean() if not hotspot_summary.empty else np.nan,
+            }
+        )
+    out = pd.DataFrame(rows)
+    if len(out) == 2:
+        ref = out[out["run"].eq(REFERENCE_RUN_NAME)].iloc[0]
+        comp = out[out["run"].eq(COMPARISON_RUN_NAME)].iloc[0]
+        delta_rows = []
+        for metric in [
+            "viscosity_ratio_mean_rx1rx2",
+            "crystallization_onset_minus_deposition_mean_s",
+            "detachment_onset_minus_deposition_mean_s",
+            "detachment_offset_minus_deposition_mean_s",
+            "mean_change_points_until_offset_or_last",
+            "mean_hotspot_spread_C",
+        ]:
+            delta_rows.append(
+                {
+                    "run": "comparison_minus_reference",
+                    "quality_0_not_good_1_good": "",
+                    "remarks": f"{metric}: {comp.get(metric, np.nan) - ref.get(metric, np.nan):.3f}" if pd.notna(comp.get(metric, np.nan)) and pd.notna(ref.get(metric, np.nan)) else f"{metric}: n/a",
+                    "chocolate": "",
+                    "protocol_duration_s": np.nan,
+                    "viscosity_ratio_mean_rx1rx2": np.nan,
+                    "crystallization_onset_minus_deposition_mean_s": np.nan,
+                    "detachment_onset_minus_deposition_mean_s": np.nan,
+                    "detachment_offset_minus_deposition_mean_s": np.nan,
+                    "complete_detachment_channels": "",
+                    "complete_before_demoulding_channels": "",
+                    "mean_change_points_until_offset_or_last": np.nan,
+                    "mean_product_delta_vs_reference_C": np.nan,
+                    "mean_hotspot_spread_C": np.nan,
+                }
+            )
+        out = pd.concat([out, pd.DataFrame(delta_rows)], ignore_index=True)
+    return out
+
+
+def export_temperature_corrected_raw_inputs() -> pd.DataFrame:
+    CORRECTED_RAW_DIR.mkdir(parents=True, exist_ok=True)
+    rows = []
+    input_dir = WORKSPACE / "inputs" / "aasted3"
+    for csv_path in sorted(input_dir.glob("*.csv")):
+        if csv_path.name == TEMPERATURE_CORRECTION_CSV.name:
+            continue
+        try:
+            df = read_run(csv_path)
+        except Exception as exc:
+            rows.append({"source_file": csv_path.name, "status": f"skipped: {exc}", "output_file": ""})
+            continue
+        output_path = CORRECTED_RAW_DIR / f"{csv_path.stem}_temperature_corrected.csv"
+        df.to_csv(output_path, index=False)
+        rows.append(
+            {
+                "source_file": csv_path.name,
+                "status": "exported",
+                "output_file": str(output_path.relative_to(WORKSPACE)),
+                "rows": int(df.shape[0]),
+                "temperature_sensor": TEMP_CORRECTION_SENSOR,
+                "corrected_channels": ", ".join([f"{ch}_tc" for ch in ALL_US_CHANNELS if f"{ch}_tc" in df.columns]),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def zone_findings(duration: pd.DataFrame, mech_delta: pd.DataFrame, product_delta: pd.DataFrame) -> pd.DataFrame:
@@ -928,7 +1280,7 @@ def style_workbook(path: Path) -> None:
 
 def main() -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = OUTPUT_DIR / "aasted3_pattern_detected_hotspot_report_v2.xlsx"
+    out_path = BASE_REPORT_WORKBOOK
 
     comparison = read_run(COMPARISON_CSV)
     reference = read_run(REFERENCE_CSV)
@@ -942,6 +1294,14 @@ def main() -> None:
         {REFERENCE_RUN_NAME: reference, COMPARISON_RUN_NAME: comparison},
         detected_zones,
     )
+    experimental_setup = load_experimental_setup()
+    viscosity_summary = viscosity_ratio_summary(
+        {REFERENCE_RUN_NAME: reference, COMPARISON_RUN_NAME: comparison},
+        parameter_landmarks,
+    )
+    detachment_homogeneity = detachment_homogeneity_summary(detachment_summary)
+    corrected_raw_inventory = export_temperature_corrected_raw_inputs()
+    temperature_correction = pd.read_csv(TEMPERATURE_CORRECTION_CSV) if TEMPERATURE_CORRECTION_CSV.exists() else pd.DataFrame()
 
     comparison_temp = temp_with_zones(comparison, COMPARISON_RUN_NAME, map_df)
     reference_temp = temp_with_zones(reference, REFERENCE_RUN_NAME)
@@ -959,6 +1319,14 @@ def main() -> None:
     detected_product_summary = product_zone_summary(detected_temp_all)
     detected_product_delta = product_zone_delta(detected_product_summary)
     hotspot_summary, hotspot_long, hotspot_delta_matrix = clearer_hotspots(detected_temp_all)
+    quality_comparison = quality_comparison_summary(
+        experimental_setup,
+        parameter_landmarks,
+        viscosity_summary,
+        detachment_summary,
+        detected_product_delta,
+        hotspot_summary,
+    )
 
     detected_duration = detected_zones.pivot_table(index="zone", columns="run", values="duration_s").reset_index()
     detected_duration.columns.name = None
@@ -988,9 +1356,10 @@ def main() -> None:
             ["reference_run", REFERENCE_CSV.name],
             ["comparison_run", COMPARISON_CSV.name],
             ["comparison_label", COMPARISON_RUN_NAME],
-            ["method", "Pattern-based DTW alignment using T8, acc z mean/std, gyro y mean/std per second"],
-            ["new_in_this_version", "Adds experimental per-run pattern-derived zones and clearer product-hotspot figures."],
-            ["aasted_detachment_architecture", "Optional. Add a parameter_summary file under inputs/aasted3 with deposition_s, detachment_onset_s, and optional crystallization_onset_s to populate ultrasound detachment offsets."],
+            ["method", "Pattern-based DTW alignment using T8, acc z mean/std, gyro y mean/std per second; ultrasound analyses use T7-temperature-corrected US columns."],
+            ["new_in_this_version", "Adds T7 polynomial correction for ultrasound, viscosity ratio, Aasted parameter-summary landmarks, and detachment offset/quality comparison."],
+            ["aasted_detachment_architecture", "Reads aa3_trials experimental summary/parameter_summary from inputs/aasted3 and populates crystallization onset, detachment onset, and T-corrected ultrasound detachment offsets."],
+            ["ultrasound_temperature_correction", "Corrected channel definition: channel_tc = raw channel / polynomial(T7). Coefficients are stored in inputs/aasted3/aasted3_temperature_correction_coefficients.csv."],
             ["extra_wall_time_s", extra_wall],
             ["meaning_of_extra_wall_time", "Comparison run elapsed duration minus reference elapsed duration; not itself a stop window."],
             ["dtw_cost", dtw_cost],
@@ -1013,7 +1382,8 @@ def main() -> None:
             ["product_hotspot_definition", "For the remade hotspot sheets, a product hotspot means a product sensor (T2, T3, T4, T5, T7) is warmer than the product-sensor average within the same detected zone."],
             ["pattern_detected_zones", "Experimental per-run segmentation from T8 valleys, sustained gyro-y variability, acc-z variability, and late T8 rise. Early zones are lower confidence than vibration/cooling cycles."],
             ["demoulding_subphases", "The former broad demoulding zone is split into demoulding_twisting, demoulding_vibration, and final_demoulding from acc-z/acc-x/gyro-y patterns."],
-            ["aasted_detachment_offset", "If parameter_summary is available, ultrasound detachment offset uses positive/upward change points and a pre-deposition reference minus 10% threshold, analogous to the lab-trial logic."],
+            ["aasted_detachment_offset", "If parameter_summary/experimental summary is available, ultrasound detachment offset uses positive/upward change points in T-corrected US and a pre-deposition reference minus 10% threshold, analogous to the lab-trial logic. Search window is detachment onset to run end."],
+            ["viscosity_ratio", "For Rx1Tx1 and Rx2Tx2: median T-corrected US 50-55 s after deposition divided by median T-corrected US in the 5 s before deposition; the report also stores the two-channel mean."],
         ],
         columns=["term", "plain_language_explanation"],
     )
@@ -1038,9 +1408,15 @@ def main() -> None:
         "Hotspot Summary": hotspot_summary,
         "Hotspot Sensor Data": hotspot_long,
         "Hotspot Delta Matrix": hotspot_delta_matrix,
+        "Temperature Correction": temperature_correction,
+        "Corrected Raw Inventory": corrected_raw_inventory,
+        "Experimental Setup": experimental_setup,
+        "Viscosity Ratio": viscosity_summary,
         "Aasted Detachment Summary": detachment_summary,
         "Aasted US Change Points": detachment_change_points,
+        "Aasted Detachment Homogeneity": detachment_homogeneity,
         "Aasted Parameter Landmarks": parameter_landmarks,
+        "Quality Comparison": quality_comparison,
         "Detected Product By Zone": detected_product_summary,
         "Detected Product Delta": detected_product_delta,
         "Alignment Path Sample": path_sample,

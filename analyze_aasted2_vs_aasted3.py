@@ -38,21 +38,24 @@ AA3_SETUP_XLSX = AA3_INPUT / "aa3_trials_experimental_setup.xlsx"
 AA3_SUMMARY_XLSX = AA3_INPUT / "aa3_trials_experimental_summary.xlsx"
 AA3_CONFIG_YAML = AA3_INPUT / "aasted3_mould_profile.yaml"
 AA3_CONFIG_IMAGE = AA3_INPUT / "aasted3_config.png"
-AA3_RAW_TABLES = WORKSPACE / "outputs" / "aasted3_run_comparison" / "summary" / "output_raw_data" / "aasted3_raw_detail_tables.xlsx"
-AA3_REFERENCE_FIGURE = WORKSPACE / "outputs" / "aasted3_run_comparison" / "reference_2291_4160_temperature_accz_zones.png"
+AA3_RUN_FOLDER = WORKSPACE / "outputs" / "aasted3_run_comparison" / "runs" / "17_3_f_m_aa3_25_06_26_2160_4374s"
+AA3_RAW_TABLES = AA3_RUN_FOLDER / "reports" / "aasted3_raw_detail_tables.xlsx"
+AA3_REFERENCE_FIGURE = AA3_RUN_FOLDER / "figures" / "zone_overview" / "reference_2291_4160_temperature_accz_zones.png"
 
 TEMP_SENSORS = [f"T{i}" for i in range(1, 10)]
 IMU_SENSORS = ["acc x", "acc y", "acc z", "gyro x", "gyro y", "gyro z"]
 PRIMARY_US = ["Rx1Tx1", "Rx2Tx2"]
 
 AA2_GROUPS = {
-    "product": ["T1", "T3", "T4", "T6"],
+    "product": ["T3", "T4", "T6"],
+    "humidity": ["T1"],
     "mould": ["T2", "T9"],
     "ambient": ["T8"],
     "process_markers": ["T5", "T7", "T8"],
 }
 AA3_GROUPS = {
     "product": ["T2", "T3", "T4", "T5", "T7"],
+    "humidity": ["T1"],
     "mould": ["T6"],
     "ambient": ["T8", "T9"],
 }
@@ -193,6 +196,53 @@ def temperature_by_zone(
     return pd.DataFrame(rows)
 
 
+def hotspot_summary(
+    df: pd.DataFrame,
+    zones: list[tuple[float, float, str, str]] | list[tuple[float, float, str]],
+    product_sensors: list[str],
+    run: str,
+    profile: str,
+) -> pd.DataFrame:
+    rows = []
+    available = [sensor for sensor in product_sensors if sensor in df.columns]
+    if not available:
+        return pd.DataFrame()
+    for zone_tuple in zones:
+        start, end, zone = zone_tuple[:3]
+        window = slice_window(df, start, end)
+        sensor_means = window[available].mean(numeric_only=True).dropna()
+        if sensor_means.empty:
+            continue
+        product_mean = float(sensor_means.mean())
+        deltas = sensor_means - product_mean
+        hottest = str(sensor_means.idxmax())
+        coolest = str(sensor_means.idxmin())
+        spread = float(sensor_means.max() - sensor_means.min())
+        severity = "high" if spread >= 2.0 else "medium" if spread >= 1.0 else "low"
+        color = "#F8696B" if severity == "high" else "#FFEB84" if severity == "medium" else "#63BE7B"
+        row = {
+            "profile": profile,
+            "run": run,
+            "zone": zone,
+            "start_s": start,
+            "end_s": effective_end(end, df),
+            "product_sensors": ", ".join(available),
+            "product_mean_C": product_mean,
+            "hottest_sensor": hottest,
+            "hottest_mean_C": float(sensor_means[hottest]),
+            "coolest_sensor": coolest,
+            "coolest_mean_C": float(sensor_means[coolest]),
+            "spread_hottest_minus_coolest_C": spread,
+            "spread_severity": severity,
+            "spread_color": color,
+        }
+        for sensor in available:
+            row[f"{sensor}_mean_C"] = float(sensor_means[sensor])
+            row[f"{sensor}_delta_vs_product_mean_C"] = float(deltas[sensor])
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def mechanical_metrics(window: pd.DataFrame) -> dict[str, object]:
     out: dict[str, object] = {"n_imu_points": int(window[IMU_SENSORS].dropna(how="all").shape[0]) if set(IMU_SENSORS).issubset(window.columns) else 0}
     for col in IMU_SENSORS:
@@ -255,6 +305,39 @@ def load_aa2_setup() -> pd.DataFrame:
             "Quality (0 = not good, 1 = good) (when 1 = Empty Run then no quality was assessed)": "quality",
         }
     )
+
+
+def load_setup_summary(path: Path, profile: str, run_name: str) -> dict[str, object]:
+    if not path.exists():
+        return {}
+    raw = pd.read_excel(path).dropna(how="all")
+    if raw.empty:
+        return {}
+    columns = {str(col).lower(): col for col in raw.columns}
+    run_col = next((col for key, col in columns.items() if "experimental" in key and "name" in key), None)
+    selected = raw
+    if run_col:
+        if profile == "aasted3_reference":
+            hit = raw[raw[run_col].astype(str).str.contains("2291|reference", case=False, na=False)]
+        else:
+            hit = raw[raw[run_col].astype(str).eq(run_name)]
+        if not hit.empty:
+            selected = hit
+    row = selected.iloc[0]
+    def find(*tokens: str) -> object:
+        for col in raw.columns:
+            text = str(col).lower()
+            if all(token in text for token in tokens):
+                return row.get(col, "")
+        return ""
+    return {
+        "setup_run_name": row.get(run_col, run_name) if run_col else run_name,
+        "quality_0_not_good_1_good": find("quality"),
+        "chocolate": find("chocolate"),
+        "tempering": find("tempering"),
+        "remarks": find("remarks"),
+        "protocol_duration_s": parse_float(find("duration")),
+    }
 
 
 def load_aa2_landmarks() -> pd.DataFrame:
@@ -420,6 +503,66 @@ def temp_until_detachment(df: pd.DataFrame, landmarks: pd.DataFrame, groups: dic
     return pd.DataFrame(rows)
 
 
+def quality_comparison(
+    landmarks: pd.DataFrame,
+    viscosity: pd.DataFrame,
+    cooling_summary: pd.DataFrame,
+    hotspot: pd.DataFrame,
+    mechanical: pd.DataFrame,
+) -> pd.DataFrame:
+    rows = []
+    for profile, run, setup_path in [
+        ("aasted2", AA2_RUN_NAME, AA2_SETUP_XLSX),
+        ("aasted3_reference", AA3_REFERENCE_NAME, AA3_SETUP_XLSX),
+    ]:
+        setup = load_setup_summary(setup_path, profile, run)
+        run_landmarks = landmarks[landmarks["profile"].eq(profile)]
+        run_visc = viscosity[viscosity["profile"].eq(profile)]
+        product_cooling = cooling_summary[
+            (cooling_summary["profile"].eq(profile))
+            & (cooling_summary["aggregate_zone"].eq("all_cooling"))
+            & (cooling_summary["temperature_group"].eq("product"))
+        ]
+        run_hotspots = hotspot[hotspot["profile"].eq(profile)] if not hotspot.empty else pd.DataFrame()
+        run_mech = mechanical[mechanical["profile"].eq(profile)] if not mechanical.empty else pd.DataFrame()
+        vibration = run_mech[run_mech["comparison_domain"].eq("process_vibration")]
+        twisting = run_mech[run_mech["comparison_domain"].eq("demoulding_twisting")]
+        rows.append(
+            {
+                "profile": profile,
+                "run": run,
+                **setup,
+                "deposition_s": run_landmarks["deposition_s"].dropna().iloc[0] if run_landmarks["deposition_s"].notna().any() else np.nan,
+                "crystallization_onset_minus_deposition_mean_s": run_landmarks["crystallization_onset_minus_deposition_s"].mean()
+                if "crystallization_onset_minus_deposition_s" in run_landmarks
+                else np.nan,
+                "detachment_onset_minus_deposition_mean_s": run_landmarks["detachment_onset_minus_deposition_s"].mean()
+                if "detachment_onset_minus_deposition_s" in run_landmarks
+                else np.nan,
+                "detachment_offset_minus_deposition_mean_s": run_landmarks["detachment_offset_minus_deposition_s"].mean()
+                if "detachment_offset_minus_deposition_s" in run_landmarks
+                else np.nan,
+                "detachment_onset_to_offset_mean_s": run_landmarks["detachment_onset_to_offset_s"].mean()
+                if "detachment_onset_to_offset_s" in run_landmarks
+                else np.nan,
+                "viscosity_proxy_mean_rx1rx2": run_visc["raw_viscosity_proxy_mean_rx1rx2"].dropna().iloc[0]
+                if not run_visc.empty and run_visc["raw_viscosity_proxy_mean_rx1rx2"].notna().any()
+                else np.nan,
+                "all_cooling_product_mean_C": product_cooling["mean_C"].iloc[0] if not product_cooling.empty else np.nan,
+                "all_cooling_product_spread_C": product_cooling["mean_spatial_spread_C"].iloc[0] if not product_cooling.empty else np.nan,
+                "max_hotspot_spread_C": run_hotspots["spread_hottest_minus_coolest_C"].max() if not run_hotspots.empty else np.nan,
+                "vibration_gyro_magnitude_mean": vibration["gyro_vector_magnitude_mean"].iloc[0] if not vibration.empty else np.nan,
+                "twisting_gyro_magnitude_mean": twisting["gyro_vector_magnitude_mean"].iloc[0] if not twisting.empty else np.nan,
+                "quality_note": (
+                    "quality missing or not assessed"
+                    if str(setup.get("quality_0_not_good_1_good", "")).strip().lower() in ["", "nan", "no information"]
+                    else "quality value present"
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def aggregate_windows(
     df: pd.DataFrame,
     zone_groups: dict[str, list[str]],
@@ -534,6 +677,120 @@ def selected_mechanical_comparison(aa2_df: pd.DataFrame, aa3_df: pd.DataFrame) -
     return pd.DataFrame(rows)
 
 
+def mechanical_delta_summary(mechanical: pd.DataFrame) -> pd.DataFrame:
+    if mechanical.empty:
+        return pd.DataFrame()
+    metrics = [
+        ("acc_vector_magnitude_std", "acc vibration variability"),
+        ("gyro_vector_magnitude_mean", "mean rotational intensity"),
+        ("gyro_vector_magnitude_std", "rotational variability"),
+        ("gyro y_std", "gyro-y variability"),
+        ("acc z_std", "acc-z variability"),
+    ]
+    rows = []
+    for domain in ["process_vibration", "demoulding_twisting", "demoulding_vibration"]:
+        aa2 = mechanical[(mechanical["profile"] == "aasted2") & (mechanical["comparison_domain"] == domain)]
+        aa3 = mechanical[(mechanical["profile"] == "aasted3_reference") & (mechanical["comparison_domain"] == domain)]
+        if aa2.empty or aa3.empty:
+            continue
+        for metric, label in metrics:
+            aa2_val = pd.to_numeric(aa2[metric], errors="coerce").dropna().iloc[0] if metric in aa2 and aa2[metric].notna().any() else np.nan
+            aa3_val = pd.to_numeric(aa3[metric], errors="coerce").dropna().iloc[0] if metric in aa3 and aa3[metric].notna().any() else np.nan
+            delta = aa2_val - aa3_val if pd.notna(aa2_val) and pd.notna(aa3_val) else np.nan
+            ratio = aa2_val / aa3_val if pd.notna(aa2_val) and pd.notna(aa3_val) and abs(aa3_val) > 1e-12 else np.nan
+            if pd.isna(delta):
+                reading = ""
+            elif ratio >= 1.25:
+                reading = "AA2 clearly stronger"
+            elif ratio <= 0.75:
+                reading = "AA2 clearly weaker"
+            else:
+                reading = "similar magnitude"
+            rows.append(
+                {
+                    "comparison_domain": domain,
+                    "metric": metric,
+                    "plain_language_metric": label,
+                    "aa2_value": aa2_val,
+                    "aa3_reference_value": aa3_val,
+                    "delta_aa2_minus_aa3": delta,
+                    "ratio_aa2_over_aa3": ratio,
+                    "reading": reading,
+                }
+            )
+    transfer = mechanical[
+        (mechanical["profile"] == "aasted2") & (mechanical["comparison_domain"] == "post_cooling_mechanical_transfer")
+    ]
+    if not transfer.empty:
+        row = transfer.iloc[0]
+        rows.append(
+            {
+                "comparison_domain": "post_cooling_mechanical_transfer",
+                "metric": "process_interpretation",
+                "plain_language_metric": "AA2-only mechanical event",
+                "aa2_value": np.nan,
+                "aa3_reference_value": np.nan,
+                "delta_aa2_minus_aa3": np.nan,
+                "ratio_aa2_over_aa3": np.nan,
+                "reading": row.get("interpretation", ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def spread_reading(delta: float) -> str:
+    if pd.isna(delta):
+        return ""
+    if delta >= 1.0:
+        return "AA2 more heterogeneous"
+    if delta <= -1.0:
+        return "AA2 more homogeneous"
+    return "similar spread"
+
+
+def temperature_spread_comparison(cooling_delta: pd.DataFrame, temp_until: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    if not cooling_delta.empty:
+        for _, row in cooling_delta.iterrows():
+            delta = row.get("delta_spread_aa2_minus_aa3_C", np.nan)
+            rows.append(
+                {
+                    "comparison_domain": row.get("aggregate_zone"),
+                    "channel": "aggregate",
+                    "temperature_group": row.get("temperature_group"),
+                    "aa2_mean_spatial_spread_C": row.get("aa2_mean_spatial_spread_C"),
+                    "aa3_reference_mean_spatial_spread_C": row.get("aa3_reference_mean_spatial_spread_C"),
+                    "delta_spread_aa2_minus_aa3_C": delta,
+                    "aa2_mean_C": row.get("aa2_mean_C"),
+                    "aa3_reference_mean_C": row.get("aa3_reference_mean_C"),
+                    "delta_mean_aa2_minus_aa3_C": row.get("delta_aa2_minus_aa3_C"),
+                    "reading": spread_reading(delta),
+                }
+            )
+    if not temp_until.empty:
+        for (channel, temp_group), group in temp_until.groupby(["channel", "temperature_group"], dropna=False):
+            aa2 = group[group["profile"].eq("aasted2")]
+            aa3 = group[group["profile"].eq("aasted3_reference")]
+            if aa2.empty or aa3.empty:
+                continue
+            delta = aa2["mean_spatial_spread_C"].iloc[0] - aa3["mean_spatial_spread_C"].iloc[0]
+            rows.append(
+                {
+                    "comparison_domain": "deposition_to_detachment_onset",
+                    "channel": channel,
+                    "temperature_group": temp_group,
+                    "aa2_mean_spatial_spread_C": aa2["mean_spatial_spread_C"].iloc[0],
+                    "aa3_reference_mean_spatial_spread_C": aa3["mean_spatial_spread_C"].iloc[0],
+                    "delta_spread_aa2_minus_aa3_C": delta,
+                    "aa2_mean_C": aa2["mean_C"].iloc[0],
+                    "aa3_reference_mean_C": aa3["mean_C"].iloc[0],
+                    "delta_mean_aa2_minus_aa3_C": aa2["mean_C"].iloc[0] - aa3["mean_C"].iloc[0],
+                    "reading": spread_reading(delta),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
 def zone_definitions() -> pd.DataFrame:
     return pd.DataFrame(
         [
@@ -584,6 +841,32 @@ def style_workbook(path: Path) -> None:
                 cell.alignment = Alignment(vertical="top", wrap_text=False)
                 if isinstance(cell.value, float):
                     cell.number_format = "0.000"
+        if ws.title == "Hotspot Summary" and ws.max_row > 1:
+            headers = {cell.value: cell.column for cell in ws[1]}
+            color_col = headers.get("spread_color")
+            severity_col = headers.get("spread_severity")
+            spread_col = headers.get("spread_hottest_minus_coolest_C")
+            for row_idx in range(2, ws.max_row + 1):
+                color = str(ws.cell(row_idx, color_col).value or "").replace("#", "") if color_col else ""
+                if len(color) == 6:
+                    for col_idx in [severity_col, color_col, spread_col]:
+                        if col_idx:
+                            ws.cell(row_idx, col_idx).fill = PatternFill("solid", fgColor=color)
+        if ws.title in {"Mechanical Delta", "Spread Comparison"} and ws.max_row > 1:
+            headers = {cell.value: cell.column for cell in ws[1]}
+            reading_col = headers.get("reading")
+            if reading_col:
+                for row_idx in range(2, ws.max_row + 1):
+                    reading = str(ws.cell(row_idx, reading_col).value or "").lower()
+                    color = ""
+                    if "stronger" in reading or "heterogeneous" in reading:
+                        color = "F8696B"
+                    elif "weaker" in reading or "homogeneous" in reading:
+                        color = "63BE7B"
+                    elif "similar" in reading:
+                        color = "FFEB84"
+                    if color:
+                        ws.cell(row_idx, reading_col).fill = PatternFill("solid", fgColor=color)
     wb.save(path)
 
 
@@ -596,6 +879,18 @@ def scale_points(df: pd.DataFrame, col: str, x0: int, y0: int, w: int, h: int, x
     xs = x0 + (series["elapsed_s"].to_numpy() / xmax) * w
     ys = y0 + h - ((series[col].to_numpy() - ymin) / (ymax - ymin)) * h
     return [(int(x), int(y)) for x, y in zip(xs, ys) if np.isfinite(x) and np.isfinite(y)]
+
+
+def robust_normalized(series: pd.Series) -> pd.Series:
+    s = pd.to_numeric(series, errors="coerce")
+    clean = s.dropna()
+    if clean.empty:
+        return s * np.nan
+    center = clean.median()
+    lo = clean.quantile(0.02)
+    hi = clean.quantile(0.98)
+    scale = max(abs(hi - center), abs(center - lo), 1e-9)
+    return ((s - center) / scale).clip(-1.15, 1.15)
 
 
 def draw_polyline(draw: ImageDraw.ImageDraw, pts: list[tuple[int, int]], color: str, width: int = 2) -> None:
@@ -632,7 +927,7 @@ def make_aa2_zone_figure(df: pd.DataFrame, landmarks: pd.DataFrame) -> Path:
         label = zone.replace("_", " ")
         if x_end - x_start > 50:
             draw.text((x_start + 3, y_temp - 19), label[:24], fill="#334155", font=small_font)
-    for y0, title in [(y_temp, "Temperature (C)"), (y_imu, "IMU"), (y_us, "Ultrasound raw (a.u.)")]:
+    for y0, title in [(y_temp, "Temperature + RH T1"), (y_imu, "IMU robust-normalized"), (y_us, "Ultrasound raw (a.u.)")]:
         draw.rectangle([margin_l, y0, margin_l + panel_w, y0 + panel_h], outline="#334155", width=1)
         draw.text((12, y0 + 8), title, fill="#111827", font=label_font)
     temp_vals = df[TEMP_SENSORS].stack().dropna()
@@ -651,12 +946,12 @@ def make_aa2_zone_figure(df: pd.DataFrame, landmarks: pd.DataFrame) -> Path:
     }
     for sensor in TEMP_SENSORS:
         draw_polyline(draw, scale_points(df, sensor, margin_l, y_temp, panel_w, panel_h, xmax, tmin, tmax), temp_colors[sensor], 2)
-    imu_cols = ["acc x", "acc y", "acc z", "gyro y"]
-    imu_vals = df[imu_cols].stack().dropna()
-    imin = float(imu_vals.quantile(0.01)) if not imu_vals.empty else -1
-    imax = float(imu_vals.quantile(0.99)) if not imu_vals.empty else 1
+    draw.line([margin_l, y_imu + panel_h // 2, margin_l + panel_w, y_imu + panel_h // 2], fill="#CBD5E1", width=1)
+    imu_plot = df[["elapsed_s"]].copy()
     for sensor, color in [("acc x", "#2563EB"), ("acc y", "#16A34A"), ("acc z", "#111827"), ("gyro y", "#DC2626")]:
-        draw_polyline(draw, scale_points(df, sensor, margin_l, y_imu, panel_w, panel_h, xmax, imin, imax), color, 2)
+        plot_col = f"{sensor}_robust"
+        imu_plot[plot_col] = robust_normalized(df[sensor])
+        draw_polyline(draw, scale_points(imu_plot, plot_col, margin_l, y_imu, panel_w, panel_h, xmax, -1.2, 1.2), color, 2)
     us_vals = df[PRIMARY_US].stack().dropna()
     umin = float(us_vals.quantile(0.01)) if not us_vals.empty else -1
     umax = float(us_vals.quantile(0.99)) if not us_vals.empty else 1
@@ -685,7 +980,7 @@ def make_aa2_zone_figure(df: pd.DataFrame, landmarks: pd.DataFrame) -> Path:
         draw.text((x + 3, y_us + panel_h - 18), label[:18], fill=color, font=small_font)
     legend_x = width - 340
     legend_y = 30
-    legend_items = [("T sensors", "#2563EB"), ("acc x/y/z + gyro y", "#111827"), ("Rx1Tx1/Rx2Tx2", "#D0268A"), ("manual landmarks", "#16A34A")]
+    legend_items = [("T sensors + RH T1", "#2563EB"), ("robust IMU", "#111827"), ("Rx1Tx1/Rx2Tx2", "#D0268A"), ("manual landmarks", "#16A34A")]
     for i, (label, color) in enumerate(legend_items):
         y = legend_y + i * 18
         draw.line([legend_x, y + 7, legend_x + 26, y + 7], fill=color, width=3)
@@ -759,6 +1054,7 @@ def build_report() -> None:
     aa3_mech_zone = mechanical_by_zone(aa3, AA3_REFERENCE_ZONES, AA3_REFERENCE_NAME, "aasted3_reference")
     cooling_summary, cooling_delta = cooling_comparison(aa2, aa3)
     mech_compare = selected_mechanical_comparison(aa2, aa3)
+    mech_delta = mechanical_delta_summary(mech_compare)
     viscosity = pd.concat(
         [
             viscosity_proxy(aa2, aa2_landmarks, AA2_RUN_NAME, "aasted2"),
@@ -773,6 +1069,15 @@ def build_report() -> None:
         ],
         ignore_index=True,
     )
+    spread_compare = temperature_spread_comparison(cooling_delta, temp_until)
+    hotspots = pd.concat(
+        [
+            hotspot_summary(aa2, AA2_ZONES, AA2_GROUPS["product"], AA2_RUN_NAME, "aasted2"),
+            hotspot_summary(aa3, AA3_REFERENCE_ZONES, AA3_GROUPS["product"], AA3_REFERENCE_NAME, "aasted3_reference"),
+        ],
+        ignore_index=True,
+    )
+    quality = quality_comparison(all_landmarks, viscosity, cooling_summary, hotspots, mech_compare)
     setup = load_aa2_setup()
     figure_path = make_aa2_zone_figure(aa2, aa2_landmarks)
 
@@ -780,11 +1085,13 @@ def build_report() -> None:
         [
             ["analysis_scope", "First Aasted-2 profile and comparison against the Aasted-3 reference run."],
             ["aa2_zone_source", "Aasted-2 zones use the user-provided manual timings for 260604_aasted2_Run 1_1."],
+            ["aa2_temperature_groups", "T1 is humidity, not product. AA2 product = T3/T4/T6; humidity is shown separately as T1; mould = T2/T9; ambient = T8."],
             ["detachment_offset_source", "Aasted-2 detachment offsets are manual values from aa2_trials_experimental_summary.xlsx. No AA2 T-corrected US change-point detection is applied yet."],
             ["raw_viscosity_proxy", "Median raw US 50-55 s after deposition divided by median raw US in the 5 s before deposition; raw method used because AA2 temperature correction is not available yet."],
             ["config_location", "Sensor placement and mapping are stored in inputs/aasted2/aasted2_mould_profile.yaml and inputs/aasted3/aasted3_mould_profile.yaml, not repeated as Excel output sheets."],
             ["post_cooling_mechanical_transfer", "The 2740-2780 s AA2 segment is probably transfer/repositioning or pre-demoulding handling because it precedes clear twisting and vibration demoulding."],
             ["cooling_aggregate_mapping", "AA3 cooling_1-4 are compared to AA2 cooling_1-3; AA3 less_periodic_cooling_2 is compared to AA2 cooling_4_irregular/cooling_5/cooling_6; all_cooling combines those sections."],
+            ["imu_figure_scaling", "The overview figure uses robust per-signal IMU normalization for visualization only; mechanical comparison tables retain raw IMU values."],
         ],
         columns=["topic", "explanation"],
     )
@@ -809,9 +1116,13 @@ def build_report() -> None:
         "AA3 Ref Mechanical": aa3_mech_zone,
         "Cooling Aggregates": cooling_summary,
         "Cooling Comparison": cooling_delta,
+        "Spread Comparison": spread_compare,
+        "Hotspot Summary": hotspots,
         "Mechanical Comparison": mech_compare,
+        "Mechanical Delta": mech_delta,
         "Viscosity Proxy": viscosity,
         "Temp Until Detach Onset": temp_until,
+        "Quality Comparison": quality,
     }
     for sheet_name, df in sheets.items():
         ws = wb.create_sheet(sheet_name[:31])
@@ -858,4 +1169,3 @@ def build_report() -> None:
 
 if __name__ == "__main__":
     build_report()
-

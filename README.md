@@ -116,6 +116,7 @@ Expected inputs:
 Main logic:
 
 - Uses Aasted 2 mould geometry and sensor coordinates from `configs/aasted2_mould_profile.yaml`.
+- Treats `T1` as humidity, not product temperature; AA2 product temperature uses `T3`, `T4`, and `T6`.
 - Uses the current user-defined AA2 zones until pattern-derived AA2 zone detection is added.
 - Uses manual detachment onset/offset from the AA2 summary until ultrasound temperature correction is available.
 - Compares AA2 against the Aasted-3 reference with emphasis on cooling temperature variation, product/mould/ambient spread, vibration intensity, twisting intensity, viscosity proxy, and detachment timing.

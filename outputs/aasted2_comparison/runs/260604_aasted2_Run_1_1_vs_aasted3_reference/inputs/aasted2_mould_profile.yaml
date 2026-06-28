@@ -12,9 +12,8 @@ mould:
 sensors:
   rh_sensor: T1
   sensor_classification_note: >
-    The uploaded mould sketch labels T1 as humidity. The current user request
-    specifies temp_product as T1/T3/T4/T6, so T1 is included in the product
-    analysis group until that classification is revised.
+    T1 is humidity and is reported as a separate humidity distribution, not
+    as product temperature.
   temperature_sensors:
     - T1
     - T2
@@ -26,10 +25,11 @@ sensors:
     - T8
     - T9
   product_temperature_sensors:
-    - T1
     - T3
     - T4
     - T6
+  humidity_sensors:
+    - T1
   mould_temperature_sensors:
     - T2
     - T9

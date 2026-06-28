@@ -1,0 +1,156 @@
+profile_id: aasted3
+display_name: Aasted 3
+description: >
+  Reusable profile for Aasted 3 chocolate mould crystallization runs.
+  Use this profile when the user identifies a run as Aasted 3.
+
+mould:
+  width_mm: 112.2
+  height_mm: 33.3
+
+sensors:
+  rh_sensor: T1
+  temperature_sensors:
+    - T2
+    - T3
+    - T4
+    - T5
+    - T6
+    - T7
+    - T8
+    - T9
+  product_temperature_sensors:
+    - T2
+    - T3
+    - T4
+    - T5
+    - T7
+  non_product_temperature_sensors:
+    - T6
+    - T8
+    - T9
+  imu_channels:
+    primary:
+      - acc z
+      - gyro y
+    available:
+      - acc x
+      - acc y
+      - acc z
+      - gyro x
+      - gyro y
+      - gyro z
+  magnetic_channels:
+    - mag x
+    - mag y
+    - mag z
+  ultrasound_channels:
+    - Rx1Tx1
+    - Rx2Tx1
+    - Rx1Tx2
+    - Rx2Tx2
+
+temperature_sensor_coordinates_mm:
+  T1: [53, 23]
+  T2: [70, 13]
+  T3: [5, 5]
+  T4: [5, 31]
+  T5: [108, 5]
+  T6: [76, 24]
+  T7: [99, 30]
+  T8: [93, 23]
+  T9: [55, 10]
+
+ultrasound_sensor_coordinates_mm:
+  Rx1: [60, 30]
+  Tx1: [76, 30]
+  Rx2: [60, 17]
+  Tx2: [76, 17]
+
+zone_detection:
+  time_axis: elapsed_seconds_from_run_start
+  reference_alignment_features:
+    - T8
+    - accz_mean
+    - accz_std
+    - gyroy_mean
+    - gyroy_std
+  detected_zones:
+    - zone: movement_to_conditioning
+      basis: first warm-up / IMU-change landmark
+      confidence: medium
+    - zone: mould_conditioning
+      basis: T8 high / conditioning phase before deposition event
+      confidence: medium
+    - zone: deposition_transfer
+      basis: pre-vibration deposition or transfer IMU event
+      confidence: medium
+    - zone: vibration_warming
+      basis: longest sustained high gyro-y variability segment
+      confidence: high
+    - zone: transition_to_cooling
+      basis: post-vibration transition until first T8 valley
+      confidence: high
+    - zone: cooling_1
+      basis: T8 valley-to-valley cooling cycle
+      confidence: high
+    - zone: cooling_2
+      basis: T8 valley-to-valley cooling cycle
+      confidence: high
+    - zone: cooling_3
+      basis: T8 valley-to-valley cooling cycle
+      confidence: high
+    - zone: cooling_4
+      basis: T8 valley-to-valley cooling cycle
+      confidence: high
+    - zone: less_periodic_cooling_2
+      basis: after periodic valleys until the last cold T8 minimum
+      confidence: medium
+    - zone: transition_2
+      basis: last cold T8 minimum until sharp acc-z regime change
+      confidence: medium
+    - zone: demoulding
+      basis: after sharp acc-z regime change
+      confidence: medium
+  transition_2_rule:
+    start: last cold T8 minimum after less_periodic_cooling_2
+    end: first sharp acc-z regime change after that minimum
+  demoulding_rule:
+    start: first sharp acc-z regime change after transition_2
+
+reporting:
+  figure_sheets:
+    reference_figure: true
+    irregular_figure: true
+    axes:
+      x: absolute_csv_time_seconds
+      left_y: Temperature T2-T9 [deg C]
+      right_y: acc z [g]
+      outer_right_y: RH [%] from T1
+    zone_shading: detected_zones
+  contour_sheets:
+    enabled: true
+    contour_basis: product_temperature_sensors_only
+    product_contour_sensors:
+      - T2
+      - T3
+      - T4
+      - T5
+      - T7
+    interpolation: inverse_distance_weighting
+    scale: same_temperature_scale_per_zone_across_repetitions
+    overlays:
+      temperature_sensor_markers: product_temperature_sensors
+      ultrasound_sensor_markers: true
+  default_removed_tabs:
+    - Zone Duration
+    - Old Hotspots By Zone
+    - Hotspot Sensor Data
+    - Detected Product Delta
+    - Alignment Path Sample
+
+notes:
+  - T1 is treated as RH, not product temperature.
+  - Product contour maps must not use T6, T8, T9, or T1/RH for interpolation.
+  - Ultrasound coordinates are visual overlays only and do not influence temperature contours.
+  - For comparing repetitions, contour color scales are shared per matching zone across runs.

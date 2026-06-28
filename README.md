@@ -8,10 +8,12 @@ This workspace separates reusable analysis profiles by measurement setup. The tw
 |---|---|
 | `inputs/lab_trials` | Source workbooks for laboratory trials. Raw repetitions are stored as Excel sheets; summary landmarks and experimental setup metadata are stored in separate Excel files. |
 | `inputs/AAK_cooling_tunnel` | Filtered subgroup containing only the `a_test` / cooling-tunnel lab trials. Generated from `inputs/lab_trials`. |
+| `inputs/aasted2` | Source CSV files, setup/summary workbooks, mould profile, checklist, and mould sketch for Aasted 2 line runs. |
 | `inputs/aasted3` | Source CSV files, setup files, summary landmarks, temperature-correction coefficients, and the reusable Aasted-3 update checklist. |
 | `configs` | Reusable YAML profiles describing mould geometry, sensors, coordinates, and default analysis logic. |
 | `outputs/lab_trials` | Lab-trial repeatability and factor-screening reports. |
 | `outputs/AAK_cooling_tunnel` | Cooling-tunnel subgroup reports, including pattern-derived zones, product temperature deltas/hotspots, and ultrasound detachment pattern analysis. |
+| `outputs/aasted2_comparison` | Aasted 2 reports, including first Aasted-2 vs Aasted-3 reference comparison and packaged input archive. |
 | `outputs/aasted3_run_comparison` | Aasted 3 run-comparison reports with zone figures, contour plots, and irregularity analysis. |
 
 ## Lab Trials Profile
@@ -98,12 +100,40 @@ Typical output:
 - Product delta and hotspot summaries by zone.
 - Product Temp By Zone also includes deposition temperature pseudo-zone rows for mould temperature at deposition and chocolate temperature after deposition when deposition landmarks are available.
 
+## Aasted 2 Profile
+
+Use this profile for Aasted 2 line trials stored as CSV files.
+
+Expected inputs:
+
+- `260604_aasted2_Run 1_1.csv` or another chocolate-filled Aasted-2 raw CSV.
+- Optional empty-run CSV for context.
+- `aa2_trials_experimental_setup.xlsx`.
+- `aa2_trials_experimental_summary.xlsx`.
+- `aasted2_mould_profile.yaml`.
+- `Form_Aa2.png` or another mould configuration sketch.
+
+Main logic:
+
+- Uses Aasted 2 mould geometry and sensor coordinates from `configs/aasted2_mould_profile.yaml`.
+- Uses the current user-defined AA2 zones until pattern-derived AA2 zone detection is added.
+- Uses manual detachment onset/offset from the AA2 summary until ultrasound temperature correction is available.
+- Compares AA2 against the Aasted-3 reference with emphasis on cooling temperature variation, product/mould/ambient spread, vibration intensity, twisting intensity, viscosity proxy, and detachment timing.
+
+Typical output:
+
+- One consolidated run folder under `outputs/aasted2_comparison/runs/...`.
+- A technical comparison report workbook.
+- A zone overview figure.
+- An archived copy of the AA2 inputs plus the Aasted-3 reference inputs used for comparison.
+
 ## Practical Use
 
 When adding new data, first state which profile applies:
 
 - `lab_trials`
 - `AAK_cooling_tunnel`
+- `Aasted 2`
 - `Aasted 3`
 
 Then place or upload raw data, summary data, and experimental setup metadata into the matching input folder. The report should be generated into the matching `outputs` folder.

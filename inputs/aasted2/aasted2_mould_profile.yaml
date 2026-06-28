@@ -1,0 +1,181 @@
+profile_id: aasted2
+display_name: Aasted 2
+description: >
+  Reusable profile for Aasted 2 Mondelez Toblerone 100 g mould crystallization
+  runs. Use this profile when the user identifies a run as Aasted 2.
+
+mould:
+  width_mm: 92.2
+  height_mm: 23.3
+  sketch_file: inputs/aasted2/Form_Aa2.png
+
+sensors:
+  rh_sensor: T1
+  sensor_classification_note: >
+    The uploaded mould sketch labels T1 as humidity. The current user request
+    specifies temp_product as T1/T3/T4/T6, so T1 is included in the product
+    analysis group until that classification is revised.
+  temperature_sensors:
+    - T1
+    - T2
+    - T3
+    - T4
+    - T5
+    - T6
+    - T7
+    - T8
+    - T9
+  product_temperature_sensors:
+    - T1
+    - T3
+    - T4
+    - T6
+  mould_temperature_sensors:
+    - T2
+    - T9
+  ambient_temperature_sensors:
+    - T8
+  process_marker_temperature_sensors:
+    - T5
+    - T7
+    - T8
+  primary_ultrasound_channels:
+    - Rx1Tx1
+    - Rx2Tx2
+  ultrasound_channels:
+    - Rx1Tx1
+    - Rx2Tx2
+    - Rx1Tx2
+    - Rx2Tx1
+  imu_channels:
+    primary:
+      - acc x
+      - acc y
+      - acc z
+      - gyro y
+    available:
+      - acc x
+      - acc y
+      - acc z
+      - gyro x
+      - gyro y
+      - gyro z
+  magnetic_channels:
+    - mag x
+    - mag y
+    - mag z
+
+temperature_sensor_coordinates_mm:
+  T1: [50.2, 7.1]
+  T2: [38.1, 11.2]
+  T3: [45.0, 1.7]
+  T4: [18.0, 1.7]
+  T5: [34.3, 1.7]
+  T6: [29.4, 15.4]
+  T7: [38.4, 7.8]
+  T8: [34.1, 15.4]
+  T9: [11.2, 11.4]
+
+ultrasound_sensor_coordinates_mm:
+  Rx1: [41.5, 1.57]
+  Tx1: [49.4, 1.57]
+  Rx2: [30.5, 10.2]
+  Tx2: [34.8, 10.2]
+
+temperature_to_us_mapping:
+  T1: Mean
+  T2: Mean
+  T3: Rx1Tx1
+  T4: Mean
+  T5: Mean
+  T6: Rx2Tx2
+  T7: Mean
+  T8: Mean
+  T9: Mean
+
+manual_zone_template_seconds:
+  basis_run: 260604_aasted2_Run 1_1
+  notes:
+    - T8 is used as the rear ambient/cooling reference.
+    - T5 and T8 are useful process markers for conditioning and cooling minima.
+    - The 2740-2780 s mechanical segment is labelled as post_cooling_mechanical_transfer until more process knowledge is available.
+  zones:
+    - zone: movement_to_conditioning
+      start_s: 0
+      end_s: 354
+      basis: Before deposition; mould conditioning until T1-T9, especially T5/T8/T7, rise.
+    - zone: deposition_transfer
+      start_s: 354
+      end_s: 376
+      basis: Deposition at 354 s when Rx1Tx1 and Rx2Tx2 substantially drop.
+    - zone: vibration
+      start_s: 376
+      end_s: 590
+      basis: Strong acc z/x/y movement while product and ambient temperatures are nearly stable.
+    - zone: transition_to_cooling
+      start_s: 590
+      end_s: 650
+      basis: Transition from vibration end until T8/T5 cooling pattern is established.
+    - zone: cooling_1
+      start_s: 650
+      end_s: 875
+      basis: T8/T5 cooling section with local minima.
+    - zone: cooling_2
+      start_s: 875
+      end_s: 1152
+      basis: T8/T5 cooling section with local minima.
+    - zone: cooling_3
+      start_s: 1152
+      end_s: 1481
+      basis: T8/T5 cooling section with local minima.
+    - zone: cooling_4_irregular
+      start_s: 1481
+      end_s: 2088
+      basis: Longer and more irregular cooling section.
+    - zone: cooling_5
+      start_s: 2088
+      end_s: 2452
+      basis: Later cooling section.
+    - zone: cooling_6
+      start_s: 2452
+      end_s: 2725
+      basis: Final cooling section before T5/T8 increase.
+    - zone: cooling_exit_transition
+      start_s: 2725
+      end_s: 2740
+      basis: T5 and T8 increase again after cooling before the mechanical transfer segment.
+    - zone: post_cooling_mechanical_transfer
+      start_s: 2740
+      end_s: 2780
+      basis: Gyro-y and acc x/y activity; likely transfer/repositioning before final transition and demoulding.
+    - zone: transition_2
+      start_s: 2780
+      end_s: 2980
+      basis: Post-cooling transition before clear demoulding.
+    - zone: demoulding_twisting
+      start_s: 2980
+      end_s: 3000
+      basis: Twisting subphase similar to Aasted 3.
+    - zone: demoulding_vibration
+      start_s: 3000
+      end_s: 3047
+      basis: Vibration/shaking visible in accelerometer channels.
+    - zone: final_demoulding
+      start_s: 3047
+      end_s: run_end
+      basis: Remaining demoulding/run-out.
+
+reporting:
+  temperature_groups:
+    product: [T1, T3, T4, T6]
+    mould: [T2, T9]
+    ambient: [T8]
+    process_markers: [T5, T7, T8]
+  comparison_focus:
+    - temperature spread until detachment onset
+    - cooling temperature variation
+    - vibration intensity
+    - twisting intensity
+    - viscosity proxy from raw ultrasound
+    - manual detachment onset and offset
+  detachment_offset_source: manual_experimental_summary_until_temperature_correction_is_available

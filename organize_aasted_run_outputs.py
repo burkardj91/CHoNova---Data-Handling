@@ -63,11 +63,9 @@ def organize_outputs() -> Path:
         for src in sorted(contour_dir.glob("reference_2291-4160_*.png")):
             copy_if_exists(src, contours / "reference" / src.name)
 
-    copy_if_exists(COMPARISON_CSV, inputs / COMPARISON_CSV.name)
-    copy_if_exists(TEMPERATURE_CORRECTION_CSV, inputs / TEMPERATURE_CORRECTION_CSV.name)
-    for name in ["aa3_trials_experimental_setup.xlsx", "aa3_trials_experimental_summary.xlsx"]:
-        copy_if_exists(COMPARISON_CSV.parent / name, inputs / name)
-    copy_if_exists(COMPARISON_CSV.parent / "aasted3_update_request_checklist.md", inputs / "aasted3_update_request_checklist.md")
+    for src in sorted(COMPARISON_CSV.parent.iterdir()):
+        if src.is_file():
+            copy_if_exists(src, inputs / src.name)
 
     corrected_dir = COMPARISON_CSV.parent / "temperature_corrected_raw"
     if corrected_dir.exists():

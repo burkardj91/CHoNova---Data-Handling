@@ -8,7 +8,7 @@ This workspace separates reusable analysis profiles by measurement setup. The tw
 |---|---|
 | `inputs/lab_trials` | Source workbooks for laboratory trials. Raw repetitions are stored as Excel sheets; summary landmarks and experimental setup metadata are stored in separate Excel files. |
 | `inputs/AAK_cooling_tunnel` | Filtered subgroup containing only the `a_test` / cooling-tunnel lab trials. Generated from `inputs/lab_trials`. |
-| `inputs/Aasted 3` or original desktop source files | Source CSV files for Aasted 3 line runs. |
+| `inputs/aasted3` | Source CSV files, setup files, summary landmarks, temperature-correction coefficients, and the reusable Aasted-3 update checklist. |
 | `configs` | Reusable YAML profiles describing mould geometry, sensors, coordinates, and default analysis logic. |
 | `outputs/lab_trials` | Lab-trial repeatability and factor-screening reports. |
 | `outputs/AAK_cooling_tunnel` | Cooling-tunnel subgroup reports, including pattern-derived zones, product temperature deltas/hotspots, and ultrasound detachment pattern analysis. |
@@ -80,6 +80,7 @@ Expected inputs:
 
 - Two or more CSV files from the Aasted 3 line.
 - A reference run can be supplied to define normal zone timing and pattern behavior.
+- Use `inputs/aasted3/aasted3_update_request_checklist.md` when requesting an update and you want to tick which inputs/outputs should be refreshed.
 
 Main logic:
 
@@ -95,6 +96,7 @@ Typical output:
 - Stop/irregularity detection from IMU and timing behavior.
 - Product-only contour plots with shared temperature scales per zone.
 - Product delta and hotspot summaries by zone.
+- Product Temp By Zone also includes deposition temperature pseudo-zone rows for mould temperature at deposition and chocolate temperature after deposition when deposition landmarks are available.
 
 ## Practical Use
 

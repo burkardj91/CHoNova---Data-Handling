@@ -476,15 +476,28 @@ def product_zone_summary(temp: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def temperature_window_mean(df: pd.DataFrame, sensors: list[str], start: float, end: float) -> float:
+def temperature_window_values(df: pd.DataFrame, sensors: list[str], start: float, end: float) -> pd.Series:
     available = [sensor for sensor in sensors if sensor in df.columns]
     if not available:
-        return np.nan
+        return pd.Series(dtype=float)
     window = df[(df["elapsed_s"] >= start) & (df["elapsed_s"] <= end)][available].dropna(how="all")
     if window.empty:
         idx = (df["elapsed_s"] - end).abs().idxmin()
         window = df.loc[[idx], available]
-    return float(window.mean(axis=1).median())
+    return window.mean(axis=1).dropna()
+
+
+def product_summary_row(run_name: str, zone: str, sensor: str, values: pd.Series) -> dict[str, object]:
+    return {
+        "run": run_name,
+        "zone": zone,
+        "sensor": sensor,
+        "mean_C": values.mean(),
+        "min_C": values.min(),
+        "max_C": values.max(),
+        "std_C": values.std(),
+        "n_temp_points": int(values.count()),
+    }
 
 
 def deposition_temperature_summary(runs: dict[str, pd.DataFrame], landmarks: pd.DataFrame) -> pd.DataFrame:
@@ -501,36 +514,26 @@ def deposition_temperature_summary(runs: dict[str, pd.DataFrame], landmarks: pd.
         mould_end = deposition
         chocolate_start = deposition + 20.0
         chocolate_end = deposition + 25.0
+        mould_values = temperature_window_values(df, [MOULD_DEPOSITION_SENSOR], mould_start, mould_end)
+        chocolate_values = temperature_window_values(df, CHOCOLATE_DEPOSITION_SENSORS, chocolate_start, chocolate_end)
+        rows.append(product_summary_row(run_name, "mould_temperature_deposition", MOULD_DEPOSITION_SENSOR, mould_values))
         rows.append(
-            {
-                "run": run_name,
-                "deposition_s": deposition,
-                "mould_temperature_deposition_C": median_window(df, MOULD_DEPOSITION_SENSOR, mould_start, mould_end)
-                if MOULD_DEPOSITION_SENSOR in df.columns
-                else np.nan,
-                "mould_temperature_deposition_sensor": MOULD_DEPOSITION_SENSOR,
-                "mould_temperature_deposition_window_s": f"{mould_start:.1f}-{mould_end:.1f}",
-                "chocolate_temperature_deposition_C": temperature_window_mean(
-                    df,
-                    CHOCOLATE_DEPOSITION_SENSORS,
-                    chocolate_start,
-                    chocolate_end,
-                ),
-                "chocolate_temperature_deposition_sensors": ", ".join(CHOCOLATE_DEPOSITION_SENSORS),
-                "chocolate_temperature_deposition_window_s": f"{chocolate_start:.1f}-{chocolate_end:.1f}",
-                "deposition_temperature_method": (
-                    "mould = median T7 from 5 s before deposition to deposition; "
-                    "chocolate = median row-wise mean of product sensors excluding T7 from 20-25 s after deposition"
-                ),
-            }
+            product_summary_row(
+                run_name,
+                "chocolate_temperature_deposition",
+                "CHOCOLATE_MEAN_T2_T3_T4_T5",
+                chocolate_values,
+            )
         )
     return pd.DataFrame(rows)
 
 
-def add_deposition_temperatures(summary: pd.DataFrame, deposition_temperatures: pd.DataFrame) -> pd.DataFrame:
-    if summary.empty or deposition_temperatures.empty:
+def append_deposition_temperature_rows(summary: pd.DataFrame, deposition_temperatures: pd.DataFrame) -> pd.DataFrame:
+    if deposition_temperatures.empty:
         return summary
-    return summary.merge(deposition_temperatures, on="run", how="left")
+    if summary.empty:
+        return deposition_temperatures
+    return pd.concat([summary, deposition_temperatures], ignore_index=True)
 
 
 def product_zone_delta(summary: pd.DataFrame) -> pd.DataFrame:
@@ -1377,7 +1380,7 @@ def main() -> None:
         {REFERENCE_RUN_NAME: reference, COMPARISON_RUN_NAME: comparison},
         parameter_landmarks,
     )
-    deposition_temperatures = deposition_temperature_summary(
+    deposition_temperature_rows = deposition_temperature_summary(
         {REFERENCE_RUN_NAME: reference, COMPARISON_RUN_NAME: comparison},
         parameter_landmarks,
     )
@@ -1394,11 +1397,11 @@ def main() -> None:
 
     duration = duration_by_zone(reference_seconds, map_df)
     mech_delta = mechanical_delta(reference_seconds, comparison_seconds, map_df)
-    product_summary = add_deposition_temperatures(product_zone_summary(temp_all), deposition_temperatures)
+    product_summary = append_deposition_temperature_rows(product_zone_summary(temp_all), deposition_temperature_rows)
     product_delta = product_zone_delta(product_summary)
     hotspots = hotspot_by_zone(temp_all)
     findings = zone_findings(duration, mech_delta, product_delta)
-    detected_product_summary = add_deposition_temperatures(product_zone_summary(detected_temp_all), deposition_temperatures)
+    detected_product_summary = append_deposition_temperature_rows(product_zone_summary(detected_temp_all), deposition_temperature_rows)
     detected_product_delta = product_zone_delta(detected_product_summary)
     hotspot_summary, hotspot_long, hotspot_delta_matrix = clearer_hotspots(detected_temp_all)
     quality_comparison = quality_comparison_summary(
@@ -1448,7 +1451,7 @@ def main() -> None:
             ["largest_zone_extra_s", duration.loc[duration["extra_duration_s"].idxmax(), "zone"]],
             ["largest_zone_extra_duration_s", duration["extra_duration_s"].max()],
             ["product_sensors", ", ".join(PRODUCT_SENSORS)],
-            ["deposition_temperature_fields", "Product Temp By Zone includes mould_temperature_deposition_C from T7 in the 5 s before deposition and chocolate_temperature_deposition_C from T2/T3/T4/T5 around 20 s after deposition."],
+            ["deposition_temperature_rows", "Product Temp By Zone includes two pseudo-zone rows per run: mould_temperature_deposition from T7 in the 5 s before deposition and chocolate_temperature_deposition from T2/T3/T4/T5 around 20 s after deposition."],
             ["ambient/location_marker", "T8"],
         ],
         columns=["metric", "value"],
@@ -1467,7 +1470,7 @@ def main() -> None:
             ["demoulding_subphases", "The former broad demoulding zone is split into demoulding_twisting, demoulding_vibration, and final_demoulding from acc-z/acc-x/gyro-y patterns."],
             ["aasted_detachment_offset", "If parameter_summary/experimental summary is available, ultrasound detachment offset uses positive/upward change points in T-corrected US and a pre-deposition reference minus 10% threshold, analogous to the lab-trial logic. Search window is detachment onset to run end."],
             ["viscosity_ratio", "For Rx1Tx1 and Rx2Tx2: median T-corrected US 50-55 s after deposition divided by median T-corrected US in the 5 s before deposition; the report also stores the two-channel mean."],
-            ["deposition_temperatures", "Product Temp By Zone repeats two run-level deposition inputs on each row: mould_temperature_deposition_C = median T7 from deposition-5 s to deposition; chocolate_temperature_deposition_C = median product-temperature mean of T2/T3/T4/T5 from deposition+20 s to deposition+25 s."],
+            ["deposition_temperatures", "Product Temp By Zone stores two run-level deposition inputs as normal rows: zone=mould_temperature_deposition, sensor=T7, sampled from deposition-5 s to deposition; and zone=chocolate_temperature_deposition, sensor=CHOCOLATE_MEAN_T2_T3_T4_T5, sampled from deposition+20 s to deposition+25 s."],
         ],
         columns=["term", "plain_language_explanation"],
     )
